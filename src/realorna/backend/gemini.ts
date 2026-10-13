@@ -44,6 +44,52 @@ function groundedSources(data: GeminiResponse): Source[] {
   return out;
 }
 
+const TRANSCRIBE =
+  "Transcribe every spoken word in this media, in the original language. Keep the wording. Do not summarize, translate, or comment. If there is no speech, output exactly: (tidak ada ucapan)";
+
+type MediaPart =
+  | { fileData: { fileUri: string; mimeType: string } }
+  | { inlineData: { mimeType: string; data: string } };
+
+function cleanTranscript(raw: string) {
+  const text = raw
+    .replace(/^```[a-z]*\s*/i, "")
+    .replace(/\s*```$/, "")
+    .trim();
+  if (!text || text === "(tidak ada ucapan)") return null;
+  return text;
+}
+
+export async function transcribeWithGemini(media: MediaPart): Promise<string | null> {
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
+  if (!apiKey) return null;
+  for (const model of modelChain()) {
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+          body: JSON.stringify({
+            contents: [{ role: "user", parts: [media, { text: TRANSCRIBE }] }],
+            generationConfig: { temperature: 0.1, maxOutputTokens: 4096 },
+          }),
+          signal: AbortSignal.timeout(35_000),
+        },
+      );
+      if (res.status === 404 || res.status === 400) continue;
+      if (res.status === 401 || res.status === 403) return null;
+      if (!res.ok) continue;
+      const data = (await res.json()) as GeminiResponse;
+      const text = cleanTranscript(textOf(data));
+      if (text) return text.slice(0, 12000);
+    } catch (err) {
+      console.error("realorna transcribe", model, err instanceof Error ? err.message : err);
+    }
+  }
+  return null;
+}
+
 async function callModel(model: string, apiKey: string, user: string, withSearch: boolean) {
   const generationConfig: Record<string, unknown> = {
     temperature: 0.2,

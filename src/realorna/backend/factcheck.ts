@@ -3,6 +3,7 @@ import { inspectLink, isSeverePhish, parseLink } from "../safety";
 import type { FactContract, FactErrCode, FactOk, Lang, Plan } from "../types";
 import { contractFromModel, contractFromReport, reportFromContract } from "./contract";
 import { askGemini } from "./gemini";
+import { transcribeLink, type Transcript } from "./transcript";
 import {
   claimPending,
   claimRetry,
@@ -53,6 +54,8 @@ function userPrompt(input: {
   host: string;
   bits: ReturnType<typeof pageBits> | null;
   embed: { title: string; author: string; provider: string } | null;
+  transcript: Transcript | null;
+  video: boolean;
 }) {
   const langName = input.lang === "id" ? "Bahasa Indonesia" : "English";
   return [
@@ -73,6 +76,11 @@ function userPrompt(input: {
     input.bits?.text
       ? `Teks halaman:\n"""${input.bits.text.slice(0, 6000)}"""`
       : "Teks halaman: tidak tersedia.",
+    input.video
+      ? input.transcript
+        ? `Transkrip ucapan (${input.transcript.source}):\n"""${input.transcript.text.slice(0, 8000)}"""\nAmbil klaim faktual dari ucapan ini. Caption hanya konteks tambahan.`
+        : "Transkrip ucapan: tidak tersedia. Jangan mengarang isi video. Sebutkan di red_flags bahwa audio tidak terbaca, dan nilai hanya dari teks yang ada."
+      : "",
   ]
     .filter(Boolean)
     .join("\n");
@@ -139,7 +147,15 @@ export async function checkOrder(order: { url: string; plan: Plan; lang: Lang })
   }
 
   const bits = fetched.ok ? pageBits(fetched.body) : null;
-  const hadText = Boolean((bits && bits.text.length > 280) || embed?.title);
+  const transcript =
+    inspected.video && order.plan === "advance"
+      ? await transcribeLink({
+          url: finalUrl,
+          host: inspected.host,
+          html: fetched.ok ? fetched.body : null,
+        })
+      : null;
+  const hadText = Boolean((bits && bits.text.length > 280) || embed?.title || (transcript && transcript.text.length > 40));
   let parsed: Record<string, unknown>;
   let extra: { title: string; url: string; publisher: string }[] = [];
   try {
@@ -155,6 +171,8 @@ export async function checkOrder(order: { url: string; plan: Plan; lang: Lang })
         host: inspected.host,
         bits,
         embed,
+        transcript,
+        video: inspected.video,
       }),
     );
     parsed = answer.parsed;
@@ -165,6 +183,13 @@ export async function checkOrder(order: { url: string; plan: Plan; lang: Lang })
   }
 
   const contract = contractFromModel(parsed, extra, order.lang);
+  if (inspected.video && !transcript && contract.red_flags.length < 8) {
+    contract.red_flags.push(
+      order.lang === "id"
+        ? "Audio video tidak berhasil ditranskrip, jadi penilaian hanya memakai judul dan deskripsi."
+        : "The video audio could not be transcribed, so the check used only the title and description.",
+    );
+  }
   if (!hadText && !fetched.ok && contract.sources.length === 0 && contract.verdict === "BELUM_TERVERIFIKASI") {
     throw new CheckError("unreadable");
   }

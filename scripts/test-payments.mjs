@@ -11,6 +11,9 @@ process.env.BETTER_AUTH_URL = "http://localhost:8090";
 process.env.TRANSFER_BANK_NAME = "Test bank";
 process.env.TRANSFER_ACCOUNT_NUMBER = "0000000000";
 process.env.TRANSFER_ACCOUNT_HOLDER = "TEST ONLY";
+process.env.GEMINI_MIN_INTERVAL_MS = "1000";
+process.env.GEMINI_RETRY_BASE_MS = "250";
+process.env.GEMINI_MAX_QUEUE_WAIT_MS = "2000";
 delete process.env.GEMINI_API_KEYS; delete process.env.GEMINI_API_KEY; delete process.env.XAI_API_KEY;
 const { createServer } = await import("vite");
 const server = await createServer({ server: { host: "127.0.0.1", port: 8090, strictPort: true }, logLevel: "error" });
@@ -22,7 +25,7 @@ async function request(path, body, token, extraHeaders = {}) {
   const response = await originalFetch(base + path, { method: body === undefined ? "GET" : "POST", headers: {
     "content-type": "application/json", origin: base, ...(token ? { Authorization: `Bearer ${token}` } : {}), ...extraHeaders,
   }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-  return { status: response.status, data: await response.json() };
+  return { status: response.status, data: await response.json(), retryAfter: response.headers.get("Retry-After") };
 }
 async function test(name, fn) { await fn(); checks.push(name); console.log(`PASS ${name}`); }
 const input = { url: "https://example.com/article", plan: "regular", lang: "en" };
@@ -118,32 +121,49 @@ try {
   await test("Admins can check both plans without buying or consuming credits",async()=>{
     for(const plan of ["regular","advance"]){const response=await request("/api/checks",{...input,plan,request_key:randomUUID()},admin);assert.equal(response.status,200);assert.equal(response.data.amount,0);assert.equal(response.data.payment_method,"admin");}
   });
-  await test("API-key failover skips exhausted keys, handles auth errors and stops when all are exhausted",async()=>{
+  await test("API-key failover handles invalid keys while a 429 cools down the shared pool",async()=>{
     const pool=await server.ssrLoadModule("/src/realorna/backend/key-pool.ts");
+    await sql`delete from fact_ai_throttle`; await sql`delete from fact_ai_key_cooldowns`;
     process.env.GEMINI_API_KEYS="test-exhausted,test-working,test-working"; assert.equal(pool.geminiKeys().length,2);
     const tried=[]; const call=async key=>{tried.push(key);return new Response("{}",{status:key==="test-exhausted"?429:200,headers:{"retry-after":"60"}});};
-    assert.equal((await pool.withGeminiKey(call,Date.now()+1000)).status,200); assert.deepEqual(tried,["test-exhausted","test-working"]);
-    tried.length=0;await pool.withGeminiKey(call,Date.now()+1000);assert.deepEqual(tried,["test-working"]);
+    await assert.rejects(()=>pool.withGeminiKey(call,Date.now()+5000),/gemini_quota/); assert.deepEqual(tried,["test-exhausted"]);
+    tried.length=0;await assert.rejects(()=>pool.withGeminiKey(call,Date.now()+5000),/gemini_quota/);assert.deepEqual(tried,[]);
+    await sql`delete from fact_ai_throttle`;
     process.env.GEMINI_API_KEYS='["test-denied","test-healthy"]';const authTried=[];
-    await pool.withGeminiKey(async key=>{authTried.push(key);return new Response("{}",{status:key==="test-denied"?403:200});},Date.now()+1000);assert.deepEqual(authTried,["test-denied","test-healthy"]);
-    process.env.GEMINI_API_KEYS="all-exhausted-a,all-exhausted-b";
-    await assert.rejects(()=>pool.withGeminiKey(async()=>new Response("{}",{status:429}),Date.now()+1000),/gemini_quota/);
+    await pool.withGeminiKey(async key=>{authTried.push(key);return new Response("{}",{status:key==="test-denied"?403:200});},Date.now()+5000);assert.deepEqual(authTried,["test-denied","test-healthy"]);
+    await sql`delete from fact_ai_throttle`;
     process.env.GEMINI_API_KEYS="all-invalid-a,all-invalid-b";
-    await assert.rejects(()=>pool.withGeminiKey(async()=>new Response("{}",{status:403}),Date.now()+1000),/gemini_off/);
+    await assert.rejects(()=>pool.withGeminiKey(async()=>new Response("{}",{status:403}),Date.now()+5000),/gemini_off/);
     await assert.rejects(()=>pool.withGeminiKey(async()=>{throw new Error("A cooled-down invalid key must not be retried.");},Date.now()+1000),/gemini_off/);
   });
   await test("An AI check retries with its original attempt and stores a report (mock provider)",async()=>{
+    await sql`delete from fact_ai_throttle`;
     process.env.GEMINI_API_KEYS="fixture-key-1,fixture-key-2";process.env.GEMINI_MODEL="fixture-model";
     let modelCalls=0;
     const fixture={verdict:"BELUM_TERVERIFIKASI",confidence:35,summary:"Integration test fixture only.",claims:[],red_flags:[],sources:[],meta:{title:"Test fixture",platform:"web",author:"",published_at:""}};
     globalThis.fetch=async(url,options)=>{
-      if(String(url).startsWith("https://generativelanguage.googleapis.com/")) {modelCalls++;return new Response(JSON.stringify(options.headers["x-goog-api-key"]==="fixture-key-1"?{}:{candidates:[{content:{parts:[{text:JSON.stringify(fixture)}]}}]}),{status:options.headers["x-goog-api-key"]==="fixture-key-1"?429:200});}
+      if(String(url).startsWith("https://generativelanguage.googleapis.com/")) {modelCalls++;assert.equal(options.headers["x-goog-api-key"],"fixture-key-1");return new Response(JSON.stringify(modelCalls===1?{}:{candidates:[{content:{parts:[{text:JSON.stringify(fixture)}]}}]}),{status:modelCalls===1?429:200});}
       if(String(url).startsWith("https://example.com"))return new Response(`<html><head><title>Test fixture</title></head><body><article>${"This is synthetic text for an integration test. ".repeat(40)}</article></body></html>`,{headers:{"content-type":"text/html"}});
       return originalFetch(url,options);
     };
     const response=await request("/api/analyze",{order_id:checkedOrder.order_id},alex);assert.equal(response.status,200,JSON.stringify(response.data));assert.equal(response.data.report.ok,true);assert.equal(modelCalls,2);
     const again=await request("/api/analyze",{order_id:checkedOrder.order_id},alex);assert.equal(again.status,200);assert.equal(modelCalls,2);
     assert.equal((await request("/api/account",undefined,alex)).data.attempts.length,1);
+  });
+  await test("A provider 429 returns Retry-After, persists it, and blocks repeated analysis calls without spending another attempt",async()=>{
+    await sql`delete from fact_ai_throttle`;
+    let modelCalls=0;
+    globalThis.fetch=async(url,options)=>{
+      if(String(url).startsWith("https://generativelanguage.googleapis.com/")){modelCalls++;return new Response("{}",{status:429,headers:{"Retry-After":"60"}});}
+      if(String(url).startsWith("https://example.com"))return new Response(`<article>${"Synthetic test article. ".repeat(80)}</article>`,{headers:{"content-type":"text/html"}});
+      return originalFetch(url,options);
+    };
+    const created=await request("/api/checks",{...input,request_key:randomUUID()},alex);assert.equal(created.status,200);
+    const response=await request("/api/analyze",{order_id:created.data.order_id},alex);
+    assert.equal(response.status,429);assert.ok(Number(response.retryAfter)>=60);assert.ok(response.data.retry_after_seconds>=60);
+    assert.equal((await request("/api/analyze",{order_id:created.data.order_id},alex)).status,429);assert.equal(modelCalls,1);
+    const state=await request("/api/account",undefined,alex);assert.equal(state.data.attempts.length,0);
+    assert.ok(state.data.orders.find(o=>o.order_id===created.data.order_id).retry_after_at);
   });
   console.log(JSON.stringify({ok:true,integration_checks:checks.length,live_bank_tested:false,live_gemini_tested:false}));
 } finally { globalThis.fetch=originalFetch; await server.close(); }

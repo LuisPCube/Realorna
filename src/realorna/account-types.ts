@@ -6,6 +6,7 @@ export type AccountOrder = {
   order_id: string; url: string; plan: Plan; lang: Lang; amount: number;
   status: string; payment_method: string; created_at: string; expires_at: string | null;
   transfer_reference: string | null; error: string | null; report?: FactOk | null;
+  retry_after_at?: string | null;
 };
 export type AccountState = { user: Account | null; attempts: Attempt[]; orders: AccountOrder[] };
 export type AdminOrder = AccountOrder & { username: string; bank_reference: string | null };

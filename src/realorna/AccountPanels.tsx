@@ -23,7 +23,11 @@ export function AccountPanel({ lang, onAttempt, onOrder }: { lang: Lang; onAttem
     {orders.length > 0 && <details className="account-details"><summary>{say(lang,"Payments & recent checks","Pembayaran & pemeriksaan terbaru")}</summary><ul className="account-list">
       {orders.map(order => <li key={order.order_id}><span className="account-order-summary"><strong>{order.plan === "advance" ? "Advance" : "Regular"} · {order.status}</strong><small>{order.url}</small><small>{order.payment_method === "transfer" ? `${money(order.amount)} · ${order.order_id}` : say(lang,"Check attempt","Kesempatan cek")}</small></span>
         {order.payment_method === "transfer" && ["pending","submitted"].includes(order.status) ? <button type="button" className="btn" onClick={() => onOrder(order)}>{say(lang,"View payment","Lihat tagihan")}</button>
-          : ["processed","failed","paid","processing"].includes(order.status) && order.payment_method !== "transfer" ? <button type="button" className="btn" onClick={() => onOrder(order)}>{order.status === "processed" ? say(lang,"Report","Laporan") : say(lang,"Resume / retry","Lanjut / ulang")}</button> : null}
+          : ["processed","failed","paid","processing"].includes(order.status) && order.payment_method !== "transfer" ? <button type="button" className="btn"
+            disabled={Boolean(order.retry_after_at && new Date(order.retry_after_at).getTime() > Date.now())}
+            onClick={() => onOrder(order)}>{order.status === "processed" ? say(lang,"Report","Laporan")
+              : order.retry_after_at && new Date(order.retry_after_at).getTime() > Date.now() ? say(lang,"Waiting to retry","Menunggu jeda")
+              : say(lang,"Resume / retry","Lanjut / ulang")}</button> : null}
       </li>)}
     </ul></details>}
   </section>;

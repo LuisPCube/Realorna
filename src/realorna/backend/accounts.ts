@@ -28,7 +28,7 @@ export async function accountState(request: Request) {
     and payment_method = 'transfer' and status in ('pending', 'submitted') and expires_at <= now()`;
   const [attempts, orders] = await Promise.all([
     sql.query<Attempt>(`select attempt_id, plan, source, created_at from fact_attempts where user_id = $1 and status = 'ready' order by created_at`, [user.id]),
-    sql.query<AccountOrder>(`select order_id, url, plan, lang, amount, status, payment_method, transfer_reference, created_at, expires_at, error
+    sql.query<AccountOrder>(`select order_id, url, plan, lang, amount, status, payment_method, transfer_reference, created_at, expires_at, error, retry_after_at
       from fact_orders where user_id = $1 order by created_at desc limit 20`, [user.id]),
   ]);
   return { user, attempts, orders };

@@ -1,7 +1,7 @@
 import { SYSTEM_PROMPT } from "./prompt";
 import { parseModelJson } from "./contract";
 import type { Source } from "../types";
-import { hasGeminiKeys, withGeminiKey } from "./key-pool";
+import { GeminiRateLimitError, hasGeminiKeys, withGeminiKey } from "./key-pool";
 
 type GeminiResponse = {
   candidates?: {
@@ -77,7 +77,10 @@ export async function transcribeWithGemini(media: MediaPart): Promise<string | n
     if (!res.ok) return null;
     const text = cleanTranscript(textOf(await res.json() as GeminiResponse));
     return text ? text.slice(0, 12000) : null;
-  } catch { return null; }
+  } catch (error) {
+    if (error instanceof GeminiRateLimitError) throw error;
+    return null;
+  }
 }
 
 async function callModel(model: string, apiKey: string, user: string, withSearch: boolean, signal: AbortSignal) {
@@ -108,10 +111,14 @@ export async function askGemini(user: string): Promise<{ parsed: Record<string, 
   const model = modelChain()[0];
   const deadline = Date.now() + 55_000;
   let response = await withGeminiKey((key, signal) => callModel(model, key, user, true, signal), deadline);
-  // Some free-tier models do not support search with this generation mode.
+  // Only retry without search for an explicit tool/grounding compatibility
+  // error. A generic 400 is not a reason to send the request a second time.
   if (response.status === 400) {
-    await response.body?.cancel();
-    response = await withGeminiKey((key, signal) => callModel(model, key, user, false, signal), deadline);
+    const detail = await response.clone().json().catch(() => ({})) as { error?: { message?: string } };
+    if (/google_search|grounding|search.*support|tool.*not supported/i.test(detail.error?.message ?? "")) {
+      await response.body?.cancel().catch(() => undefined);
+      response = await withGeminiKey((key, signal) => callModel(model, key, user, false, signal), deadline);
+    }
   }
   if (!response.ok) throw new Error(response.status === 404 ? "gemini_off" : "gemini_failed");
   const data = await response.json() as GeminiResponse;

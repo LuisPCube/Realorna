@@ -17,7 +17,13 @@ export const Route = createFileRoute("/api/analyze")({ server: { handlers: {
         if (!result?.report) return json({ error: "processing" }, 409);
         return json({ result: result.result, report: result.report });
       } catch (error) {
-        if (error instanceof CheckError) return json({ error: error.code }, error.code === "rate" ? 429 : error.code === "ai_unavailable" ? 503 : 422);
+        if (error instanceof CheckError) {
+          const response = json({ error: error.code, ...(error.code === "rate" ? {
+            retry_after_seconds: Math.max(1, error.retryAfterSeconds), retry_reason: error.retryReason,
+          } : {}) }, error.code === "rate" ? 429 : error.code === "ai_unavailable" ? 503 : 422);
+          if (error.code === "rate") response.headers.set("Retry-After", String(Math.max(1, error.retryAfterSeconds)));
+          return response;
+        }
         throw error;
       }
     });

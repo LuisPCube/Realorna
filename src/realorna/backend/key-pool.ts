@@ -1,9 +1,8 @@
-import { createHash } from "node:crypto";
-// Ordered server-only failover. Never send keys or provider response bodies to
-// browsers/logs. Cooldowns are best-effort per warm serverless process.
-type Cooldown = { until: number; reason: "quota" | "auth" | "failure" };
-const globalPool = globalThis as typeof globalThis & { __realornaKeyCooldownsV2?: Map<string, Cooldown> };
-const cooldowns = globalPool.__realornaKeyCooldownsV2 ??= new Map<string, Cooldown>();
+import { acquireGeminiSlot, disableKey, keyIsDisabled, releaseGeminiSlot, REQUEST_TIMEOUT_MS } from "./gemini-throttle";
+import { exponentialDelay, geminiRateSettings, GeminiRateLimitError, providerRetryInfo } from "./gemini-rate-policy";
+export { GeminiRateLimitError } from "./gemini-rate-policy";
+// Ordered failover for rejected credentials; 429 never immediately hops keys.
+// All calls, including transcription, use the shared Postgres request gate.
 export function geminiKeys(): string[] {
   const raw = process.env.GEMINI_API_KEYS?.trim();
   let values: unknown[] = [];
@@ -20,34 +19,52 @@ export function hasGeminiKeys() { return geminiKeys().length > 0; }
 export async function withGeminiKey(call: (key: string, signal: AbortSignal) => Promise<Response>, deadline: number): Promise<Response> {
   const keys = geminiKeys();
   if (!keys.length) throw new Error("gemini_off");
-  let quota = false;
-  let auth = false;
-  let failed = false;
-  for (const key of keys) {
-    const id = createHash("sha256").update(key).digest("hex");
-    const cooldown = cooldowns.get(id);
-    if (cooldown && cooldown.until > Date.now()) {
-      if (cooldown.reason === "quota") quota = true;
-      else if (cooldown.reason === "auth") auth = true;
-      else failed = true;
+  const settings = geminiRateSettings();
+  let keyIndex = 0;
+  let lastError: Error = new Error("gemini_failed");
+  for (let attempt = 0; attempt < settings.maxAttempts; attempt++) {
+    while (keyIndex < keys.length && await keyIsDisabled(keys[keyIndex])) keyIndex++;
+    if (keyIndex >= keys.length) throw new Error("gemini_off");
+    const key = keys[keyIndex];
+    const remaining = deadline - Date.now();
+    if (remaining < 500) break;
+    const lease = await acquireGeminiSlot(deadline);
+    let response: Response;
+    try {
+      response = await call(key, AbortSignal.timeout(Math.max(1, Math.min(REQUEST_TIMEOUT_MS, deadline - Date.now()))));
+    } catch {
+      await releaseGeminiSlot(lease, { delayMs: exponentialDelay(lease.failures, settings.retryBaseMs), reason: "busy" });
+      lastError = new Error("gemini_failed");
       continue;
     }
-    const remaining = deadline - Date.now();
-    if (remaining < 300) break;
-    try {
-      const response = await call(key, AbortSignal.timeout(Math.min(20_000, remaining)));
-      if (response.status === 429) {
-        quota = true;
-        const retry = response.headers.get("retry-after");
-        const seconds = retry ? Number(retry) || (Date.parse(retry) - Date.now()) / 1000 : 60;
-        cooldowns.set(id, { until: Date.now() + Math.min(86_400, Math.max(1, seconds || 60)) * 1000, reason: "quota" });
-      } else if (response.status === 401 || response.status === 403) {
-        auth = true; cooldowns.set(id, { until: Date.now() + 600_000, reason: "auth" });
-      } else if (response.status >= 500) {
-        failed = true; cooldowns.set(id, { until: Date.now() + 10_000, reason: "failure" });
-      } else return response;
-      await response.body?.cancel();
-    } catch { failed = true; }
+    const details = response.ok ? {} : await response.clone().json().catch(() => ({}));
+    const info = providerRetryInfo(response, details);
+    if (response.status === 429) {
+      const delayMs = Math.max(info.delayMs ?? (info.dailyQuota ? 3_600_000 : 0), exponentialDelay(lease.failures, settings.retryBaseMs));
+      const reason = info.dailyQuota ? "quota" : "rate";
+      const waitMs = await releaseGeminiSlot(lease, { delayMs, reason });
+      await response.body?.cancel().catch(() => undefined);
+      lastError = new GeminiRateLimitError(Math.max(delayMs, waitMs) / 1000, reason);
+      if (info.dailyQuota || attempt + 1 >= settings.maxAttempts || delayMs + 500 >= deadline - Date.now()) throw lastError;
+      // Wait through the shared gate before retrying this SAME key.
+      continue;
+    }
+    if (response.status === 401 || response.status === 403 || (response.status === 400 && info.invalidKey)) {
+      await disableKey(key);
+      await releaseGeminiSlot(lease);
+      await response.body?.cancel().catch(() => undefined);
+      keyIndex++;
+      lastError = new Error("gemini_off");
+      continue;
+    }
+    if (response.status === 408 || response.status >= 500) {
+      await releaseGeminiSlot(lease, { delayMs: Math.max(info.delayMs ?? 0, exponentialDelay(lease.failures, settings.retryBaseMs)), reason: "busy" });
+      await response.body?.cancel().catch(() => undefined);
+      lastError = new Error("gemini_failed");
+      continue;
+    }
+    await releaseGeminiSlot(lease, { success: response.ok });
+    return response;
   }
-  throw new Error(quota ? "gemini_quota" : auth && !failed ? "gemini_off" : "gemini_failed");
+  throw lastError;
 }

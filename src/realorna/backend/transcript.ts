@@ -1,5 +1,6 @@
 import { isPublicHost } from "../engine.server";
 import { transcribeWithGemini } from "./gemini";
+import { GeminiRateLimitError } from "./key-pool";
 
 export type Transcript = {
   text: string;
@@ -239,6 +240,7 @@ async function fromMediaPage(html: string | null) {
       });
       if (text && text.length >= 20) return { text: text.slice(0, 12000), source: "gemini_media" as const };
     } catch (err) {
+      if (err instanceof GeminiRateLimitError) throw err;
       console.error("realorna media", err instanceof Error ? err.message : err);
     }
   }
@@ -263,6 +265,7 @@ export async function transcribeLink(input: { url: string; host: string; html: s
       });
       if (spoken && spoken.length >= 20) return { text: spoken.slice(0, 12000), source: "gemini_media" };
     } catch (err) {
+      if (err instanceof GeminiRateLimitError) throw err;
       console.error("realorna yt-audio", err instanceof Error ? err.message : err);
     }
     return null;
@@ -270,6 +273,7 @@ export async function transcribeLink(input: { url: string; host: string; html: s
   try {
     return await fromMediaPage(input.html);
   } catch (err) {
+    if (err instanceof GeminiRateLimitError) throw err;
     console.error("realorna transcript", err instanceof Error ? err.message : err);
     return null;
   }

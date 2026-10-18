@@ -89,7 +89,22 @@ In Vercel's value field, paste only `your-first-key,your-second-key,your-third-k
 
 The reader and ordered failover implementation are in **`src/realorna/backend/key-pool.ts`**. Actual Gemini requests are in **`src/realorna/backend/gemini.ts`**. These are server modules; the keys stay out of the browser bundle.
 
-On HTTP 429, the current key is cooled down and the next available key is tried. Authentication failures and temporary server failures also move to the next key. If all keys are rate limited, Realorna displays a rate-limit error and preserves the saved check for retry. The total request has a time budget; it does not wait indefinitely for every unavailable key. Cooldowns are best-effort within each warm server process, not a shared distributed quota counter.
+Gemini calls now pass through a **Postgres-backed request gate** shared by Vercel instances. By default, only one outbound Gemini call runs at a time, with at least 12 seconds between call starts. This covers both video transcription and fact checking. Authentication failures can select the next authorized key, with the same pacing. HTTP 429 does **not** immediately switch to another key: keys in the same project may share the exhausted quota.
+
+Transient failures use bounded exponential backoff with positive jitter. Realorna honors both the `Retry-After` header and Google's structured `RetryInfo.retryDelay`. Each provider operation gets at most three attempts by default, within its existing request time budget. A long cooldown is returned to the browser instead of keeping a Vercel request asleep indefinitely. The browser displays a countdown, and the saved check's retry time is also enforced in the database, including after reloads. Recognized daily/zero-quota failures are not automatically retried.
+
+Optional server environment settings (leave unset to use the defaults):
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `GEMINI_MIN_INTERVAL_MS` | `12000` | Minimum time between Gemini call starts across this app's database. Increase it if your project's model allows fewer requests per minute. |
+| `GEMINI_MAX_ATTEMPTS` | `3` | Total attempts per provider operation, including the first call; allowed range 1–5. |
+| `GEMINI_MAX_QUEUE_WAIT_MS` | `15000` | Maximum wait for a shared slot within an operation. Longer waits return a retry countdown. Allowed range 0–30000. |
+| `GEMINI_RETRY_BASE_MS` | `2000` | Initial backoff before jitter; subsequent transient failures increase it exponentially. |
+
+The default spacing is a starting point, not a guarantee for every Gemini model or project. Match it to your active AI Studio limits. Pacing does not increase daily or token quotas. A video check may need both a transcription call and a fact-check call; retries and a supported search-compatibility fallback can add calls. Google usage from other applications sharing your project is outside this app's request gate.
+
+The gate and credential cooldowns are stored in new tables from `migrations/0004_ai_throttle.sql`; raw API keys are never written there. All configured keys share one conservative request gate. Deploy the whole updated project and let `npm run build` apply this migration before testing. No new service or API key is required for the gate.
 
 Google applies Gemini rate limits **per project, not per API key**. Several keys in the same project share its allowance. Failover does not increase that allowance or guarantee additional free usage. Configure only keys your team is authorized to use, within the provider's applicable limits. The code does not create accounts or projects.
 
@@ -105,9 +120,10 @@ Commands included in this project:
 npm run typecheck
 npm test
 npm run test:payments
+npm run test:ai-rate-limit
 npm run build
 ```
 
-The payment integration suite always uses an isolated in-memory database and refuses to run with `DATABASE_URL` or `VERCEL` set. It includes a synthetic Gemini response; it never verifies a real payment or spends real model quota. Run it from an environment without those variables.
+The payment and rate-limit integration suites always use isolated in-memory databases and refuse to run with `DATABASE_URL` or `VERCEL` set. They include synthetic Gemini responses; they never verify a real payment or spend real model quota. Run them from an environment without those variables.
 
 The key setup, admin bootstrap, and receiving account settings must still be checked on your own deployment. See `VERIFICATION.md` for what was actually tested.

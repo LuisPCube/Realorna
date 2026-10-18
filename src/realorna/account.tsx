@@ -4,7 +4,7 @@ import type { AccountState } from "./account-types";
 import type { Lang } from "./types";
 export function say(lang: Lang, en: string, id: string) { return lang === "id" ? id : en; }
 export class RequestError extends Error {
-  constructor(public code: string, public status: number) { super(code); }
+  constructor(public code: string, public status: number, public retryAfterSeconds = 0, public retryReason = "rate") { super(code); }
 }
 export async function apiRequest<T>(path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = {};
@@ -14,11 +14,19 @@ export async function apiRequest<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, { method: body === undefined ? "GET" : "POST", headers,
     credentials: "same-origin", cache: "no-store", ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   const data = await res.json();
-  if (!res.ok) throw new RequestError(data.error || data.code || "server_error", res.status);
+  if (!res.ok) {
+    const seconds = Number(data.retry_after_seconds ?? res.headers.get("Retry-After") ?? 0);
+    throw new RequestError(data.error || data.code || "server_error", res.status,
+      Number.isFinite(seconds) ? Math.max(0, Math.ceil(seconds)) : 0, String(data.retry_reason || "rate"));
+  }
   return data as T;
 }
 export function errorMessage(error: unknown, lang: Lang) {
   const code = error instanceof RequestError ? error.code : "network";
+  if (code === "rate" && error instanceof RequestError && error.retryReason === "quota") {
+    return say(lang, "The AI project's quota is exhausted. This check is saved for retry when quota is available.",
+      "Kuota project AI habis. Pemeriksaan ini tersimpan untuk dicoba ulang saat kuota tersedia.");
+  }
   const messages: Record<string, [string, string]> = {
     username_not_found: ["Username was not found. Ask the user to register first.", "Username tidak ditemukan. Minta pengguna daftar dahulu."],
     bank_reference_already_used: ["This bank reference has already been credited.", "Referensi bank ini sudah pernah dikreditkan."],
@@ -30,7 +38,7 @@ export function errorMessage(error: unknown, lang: Lang) {
     configuration_required: ["The server needs its database and sign-in configuration.", "Database dan konfigurasi login server belum lengkap."],
     attempt_required: ["No unused attempt is available for this plan.", "Tidak ada kesempatan tersisa untuk paket ini."],
     request_conflict: ["This request was already used with different details. Refresh and try again.", "Permintaan ini sudah dipakai dengan detail berbeda. Muat ulang dan coba lagi."],
-    rate: ["All available API keys are rate limited. Retry this check later from your account.", "Semua API key yang tersedia sedang mencapai batas. Coba ulang pemeriksaan ini nanti dari akunmu."],
+    rate: ["The AI service needs a pause. Wait for the countdown, then retry this saved check without another attempt.", "Layanan AI perlu jeda. Tunggu hitungan mundur, lalu ulangi pemeriksaan tersimpan ini tanpa kesempatan tambahan."],
     ai_unavailable: ["The AI service is not configured or its keys are unavailable. Your attempt stays with this check for retry.", "Layanan AI belum diatur atau key tidak tersedia. Kesempatanmu tetap terikat pada pemeriksaan ini untuk dicoba ulang."],
   };
   const item = messages[code];

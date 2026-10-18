@@ -122,6 +122,8 @@ export function RealornaApp() {
   const [payOpen, setPayOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
   const [working, setWorking] = useState(false);
+  const [retryUntil, setRetryUntil] = useState(0);
+  const [retrySeconds, setRetrySeconds] = useState(0);
   const [adminOpen, setAdminOpen] = useState(false);
   const [selectedAttempt, setSelectedAttempt] = useState<Attempt | null>(null);
   const [resumeOrderId, setResumeOrderId] = useState<string | undefined>();
@@ -134,6 +136,26 @@ export function RealornaApp() {
   const titleRef = useRef<HTMLHeadingElement>(null);
 
   const t = (key: CopyKey, params?: Record<string, string | number>) => translate(lang, key, params);
+
+  useEffect(() => {
+    const pending = account.orders.reduce((latest, order) => Math.max(latest,
+      order.retry_after_at ? new Date(order.retry_after_at).getTime() || 0 : 0), 0);
+    if (pending > Date.now()) setRetryUntil(current => Math.max(current, pending));
+  }, [account.orders]);
+
+  useEffect(() => {
+    const update = () => setRetrySeconds(Math.max(0, Math.ceil((retryUntil - Date.now()) / 1000)));
+    update();
+    if (retryUntil <= Date.now()) return;
+    const timer = window.setInterval(update, 1000);
+    return () => clearInterval(timer);
+  }, [retryUntil]);
+
+  function rememberCooldown(error: unknown) {
+    if (error instanceof RequestError && error.code === "rate" && error.retryAfterSeconds > 0) {
+      setRetryUntil(current => Math.max(current, Date.now() + error.retryAfterSeconds * 1000));
+    }
+  }
 
   useEffect(() => {
     const storedLang = readStore<string>("rl:lang", "");
@@ -233,6 +255,7 @@ export function RealornaApp() {
 
   async function runCheck() {
     if (working || payOpen) return;
+    if (retryUntil > Date.now()) { ping(say(lang, "Please wait for the retry countdown.", "Tunggu hitungan mundur sebelum mencoba lagi.")); return; }
     const raw = url.trim();
     if (!raw) {
       setError("err_empty");
@@ -275,6 +298,7 @@ export function RealornaApp() {
 
   async function executeCheck(attemptId?: string) {
     if (working) return;
+    if (retryUntil > Date.now()) return;
     setWorking(true); setPayOpen(false);
     const link = parseLink(url);
     const looked = link ? inspectLink(link) : null;
@@ -289,6 +313,7 @@ export function RealornaApp() {
       await analyzeOrder(checkRequest.current.orderId);
       checkRequest.current = null; setSelectedAttempt(null);
     } catch (e) {
+      rememberCooldown(e);
       if (e instanceof RequestError && e.code === "attempt_required") {
         checkRequest.current = null; setSelectedAttempt(null); setPhase({ type: "idle" }); setResumeOrderId(undefined); setPayOpen(true);
       } else {
@@ -300,6 +325,7 @@ export function RealornaApp() {
 
   async function openOrder(order: AccountOrder) {
     if (working) return;
+    if (order.retry_after_at && new Date(order.retry_after_at).getTime() > Date.now()) return;
     setPlan(order.plan); setUrl(order.url);
     if (order.payment_method === "transfer") { setResumeOrderId(order.order_id); setPayOpen(true); return; }
     setWorking(true); setPhase({ type: "scan", host: parseLink(order.url)?.hostname || "", video: order.plan === "advance", step: 0 });
@@ -308,7 +334,7 @@ export function RealornaApp() {
         const stored = await apiRequest<{ report: FactOk }>(`/api/orders/${encodeURIComponent(order.order_id)}`);
         showReport(stored.report);
       } else await analyzeOrder(order.order_id);
-    } catch (e) { setPhase({ type: "fail", code: failCode(e instanceof RequestError ? e.code : "ai_failed") }); ping(errorMessage(e,lang)); }
+    } catch (e) { rememberCooldown(e); setPhase({ type: "fail", code: failCode(e instanceof RequestError ? e.code : "ai_failed") }); ping(errorMessage(e,lang)); }
     finally { setWorking(false); await account.refresh(); }
   }
 
@@ -447,7 +473,7 @@ export function RealornaApp() {
                   </label>
                   <input
                     id="url"
-                    disabled={working}
+                    disabled={working || account.loading}
                     ref={inputRef}
                     name="url"
                     type="text"
@@ -489,8 +515,8 @@ export function RealornaApp() {
                     {url ? t("clear") : t("paste")}
                   </button>
                 </div>
-                <button type="button" className="go" disabled={payOpen || working || account.loading} onClick={() => void runCheck()}>
-                  {payOpen || working ? t("checking") : t("check")}
+                <button type="button" className="go" disabled={payOpen || working || account.loading || retrySeconds > 0} onClick={() => void runCheck()}>
+                  {payOpen || working ? t("checking") : retrySeconds > 0 ? say(lang, `Retry in ${retrySeconds}s`, `Coba lagi ${retrySeconds}d`) : t("check")}
                 </button>
               </div>
               {error ? (
@@ -512,6 +538,9 @@ export function RealornaApp() {
             ) : null}
 
             {selectedAttempt && <p className="success-line"><GiftNotice/>{say(lang,`Using your ${selectedAttempt.plan === "advance" ? "Advance" : "Regular"} attempt. Paste a link to start.`,`Menggunakan kesempatan ${selectedAttempt.plan === "advance" ? "Advance" : "Regular"}. Tempel tautan untuk mulai.`)}</p>}
+            {retrySeconds > 0 && <p className="note" role="status">{say(lang,
+              `Please wait ${retrySeconds} seconds. Your saved check can be retried without another payment.`,
+              `Tunggu ${retrySeconds} detik. Pemeriksaan tersimpan bisa diulang tanpa membayar lagi.`)}</p>}
             <div className="sources">
               <div className="src-row">
                 <span className="src-label">{t("src_news")}</span>

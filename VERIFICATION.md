@@ -1,4 +1,25 @@
-# Verification — 17 October 2026
+# Verification record
+
+## 18 October 2026 — rate-limit update
+
+| Check | Result |
+| --- | --- |
+| `npm run typecheck` | Passed. |
+| `npm run build` | Passed; Vercel/Nitro output generated with the new migration included. |
+| `npm test` | Passed: 197 script unit tests and 59 TypeScript unit tests. |
+| `npm run test:payments` | Passed: 13 isolated integration scenarios, including persisted 429 retry times and no additional attempt use. |
+| `npm run test:ai-rate-limit` | Passed: 12 targeted rate-limit scenarios. |
+| Desktop/mobile browser interaction | Passed: countdown display, disabled retry, cooldown restored after reload, direct repeat request rejected, and recovery to a saved report using the same order. |
+| Development and production rendering | Passed at 1280 × 800 and 390 × 844, with visible content, no horizontal overflow or uncaught page errors. Homepage smoke checks had no console errors. |
+| Existing brand assets and whitespace | Passed the brand check against the actual project directory and `git diff --check`. |
+
+The 12 rate-limit scenarios cover `Retry-After` seconds and HTTP dates, Google `RetryInfo`, exponential backoff and jitter, conservative configuration defaults, concurrent shared pacing, spacing despite delayed workers, same-key recovery after 429, shared cooldowns across keys, daily quota handling, maximum attempts, persisted rejected-key cooldowns, stale-lease recovery, avoiding unnecessary generic-400 fallback calls, and stopping media processing after a transcription 429. Several related assertions are grouped into one scenario.
+
+The browser recovery fixture produced exactly two model calls: the initial simulated 429 and one successful call after the cooldown. Repeated requests and reloading during the cooldown did not add a model call or create another check. The automatic body-text baseline comparison flagged a desktop snapshot difference; the development and production screenshots were inspected and showed matching app layout and content.
+
+These checks used simulated Gemini responses and isolated PGlite databases. They did not call the live Gemini service, access your Vercel database, or consume live quota. Shared coordination is implemented through atomic Postgres statements; hosted PostgreSQL contention and real Vercel instance scheduling have not been load-tested here. Third-party fonts and platform chrome were stubbed in the restricted review browser, as in the earlier verification. The app's account, check, and retry requests ran normally.
+
+## 17 October 2026 — initial account and transfer update
 
 | Check | Result |
 | --- | --- |

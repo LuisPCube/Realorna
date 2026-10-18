@@ -9,6 +9,7 @@ export type OrderRow = {
   status: OrderStatus; payment_method: string; result_json: string | null; report_json: string | null;
   error: string | null; claim_token: string | null; credit_attempt_id: string | null;
   expires_at: string | Date | null; transfer_reference: string | null; bank_reference: string | null;
+  retry_after_at: string | Date | null;
 };
 export function createOrderId() { return `ro_${Date.now()}_${randomBytes(4).toString("hex")}`; }
 export async function getOrder(orderId: string, userId?: string) {
@@ -128,21 +129,23 @@ export async function createCheck(user: Account, input: { url: string; plan: Pla
 }
 export async function claimRetry(orderId: string) {
   const sql = await getSql();
-  const rows = await sql.query<OrderRow>(`update fact_orders set status = 'processing', error = null, claim_token = $2, updated_at = now()
+  const rows = await sql.query<OrderRow>(`update fact_orders set status = 'processing', error = null, claim_token = $2, retry_after_at = null, updated_at = now()
     where order_id = $1 and payment_method in ('admin', 'credit') and paid_at is not null
+    and (retry_after_at is null or retry_after_at <= now())
     and (status in ('paid', 'failed') or (status = 'processing' and updated_at < now() - interval '5 minutes')) returning *`, [orderId, randomUUID()]);
   return rows[0] ?? null;
 }
 export async function markProcessed(orderId: string, contract: FactContract, report: FactOk, token: string | null) {
   const sql = await getSql();
   await sql.query(`update fact_orders set status = 'processed', result_json = $2, report_json = $3, error = null,
-    claim_token = null, updated_at = now() where order_id = $1 and status = 'processing' and claim_token = $4`,
+    claim_token = null, retry_after_at = null, updated_at = now() where order_id = $1 and status = 'processing' and claim_token = $4`,
     [orderId, JSON.stringify(contract), JSON.stringify(report), token]);
 }
-export async function markFailed(orderId: string, error: string, token: string | null) {
+export async function markFailed(orderId: string, error: string, token: string | null, retryAfterSeconds = 0) {
   const sql = await getSql();
-  await sql.query(`update fact_orders set status = 'failed', error = $2, claim_token = null, updated_at = now()
-    where order_id = $1 and status = 'processing' and claim_token = $3`, [orderId, error.slice(0, 200), token]);
+  await sql.query(`update fact_orders set status = 'failed', error = $2, claim_token = null, updated_at = now(),
+    retry_after_at = case when $4::int > 0 then clock_timestamp() + ($4::int * interval '1 second') else null end
+    where order_id = $1 and status = 'processing' and claim_token = $3`, [orderId, error.slice(0, 200), token, retryAfterSeconds]);
 }
 export function readStored(order: OrderRow) { return { result: parseStored<FactContract>(order.result_json), report: parseStored<FactOk>(order.report_json) }; }
 function parseStored<T>(raw: string | null): T | null {
@@ -155,6 +158,6 @@ export async function publicOrder(order: OrderRow) {
     ? await sql.query<{ attempt_id: string }>(`select attempt_id from fact_attempts where source_order_id = $1 and user_id = $2 and status = 'ready'`, [order.order_id, order.user_id]) : [];
   return { order_id: order.order_id, url: order.url, plan: order.plan, lang: order.lang, status: order.status,
     amount: Number(order.amount), payment_method: order.payment_method, expires_at: order.expires_at,
-    transfer_reference: order.transfer_reference, attempt_id: attempts[0]?.attempt_id ?? null, error: order.error,
+    transfer_reference: order.transfer_reference, attempt_id: attempts[0]?.attempt_id ?? null, error: order.error, retry_after_at: order.retry_after_at,
     ...(order.status === "processed" ? readStored(order) : { result: null, report: null }) };
 }

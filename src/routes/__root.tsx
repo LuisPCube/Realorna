@@ -2,6 +2,7 @@ import { createRootRoute, HeadContent, Outlet, Scripts } from "@tanstack/react-r
 import { AuthProvider } from "@/lib/auth/provider";
 import { PreviewHostBridge } from "@/components/preview-host-bridge";
 import appCss from "../styles.css?url";
+import { AccountProvider } from "@/realorna/account";
 
 const APP_NAME = "Realorna";
 
@@ -47,7 +48,7 @@ export const Route = createRootRoute({
       <body>
         <PreviewHostBridge />
         <AuthProvider>
-          <Outlet />
+          <AccountProvider><Outlet /></AccountProvider>
         </AuthProvider>
         <Scripts />
       </body>

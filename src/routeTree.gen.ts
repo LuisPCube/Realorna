@@ -10,10 +10,15 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as LoginRouteImport } from './routes/login'
+import { Route as ApiAccountRouteImport } from './routes/api/account'
+import { Route as ApiAdminRouteImport } from './routes/api/admin'
 import { Route as ApiAnalyzeRouteImport } from './routes/api/analyze'
+import { Route as ApiChecksRouteImport } from './routes/api/checks'
 import { Route as ApiCreatePaymentRouteImport } from './routes/api/create-payment'
 import { Route as ApiDemoPaymentRouteImport } from './routes/api/demo-payment'
 import { Route as ApiMidtransWebhookRouteImport } from './routes/api/midtrans-webhook'
+import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as ApiOrdersOrderIdRouteImport } from './routes/api/orders/$orderId'
 
 const IndexRoute = IndexRouteImport.update({
@@ -21,9 +26,29 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAccountRoute = ApiAccountRouteImport.update({
+  id: '/api/account',
+  path: '/api/account',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAdminRoute = ApiAdminRouteImport.update({
+  id: '/api/admin',
+  path: '/api/admin',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiAnalyzeRoute = ApiAnalyzeRouteImport.update({
   id: '/api/analyze',
   path: '/api/analyze',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiChecksRoute = ApiChecksRouteImport.update({
+  id: '/api/checks',
+  path: '/api/checks',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiCreatePaymentRoute = ApiCreatePaymentRouteImport.update({
@@ -41,6 +66,11 @@ const ApiMidtransWebhookRoute = ApiMidtransWebhookRouteImport.update({
   path: '/api/midtrans-webhook',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
+  id: '/api/auth/$',
+  path: '/api/auth/$',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiOrdersOrderIdRoute = ApiOrdersOrderIdRouteImport.update({
   id: '/api/orders/$orderId',
   path: '/api/orders/$orderId',
@@ -49,62 +79,97 @@ const ApiOrdersOrderIdRoute = ApiOrdersOrderIdRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/login': typeof LoginRoute
+  '/api/account': typeof ApiAccountRoute
+  '/api/admin': typeof ApiAdminRoute
   '/api/analyze': typeof ApiAnalyzeRoute
+  '/api/checks': typeof ApiChecksRoute
   '/api/create-payment': typeof ApiCreatePaymentRoute
   '/api/demo-payment': typeof ApiDemoPaymentRoute
   '/api/midtrans-webhook': typeof ApiMidtransWebhookRoute
+  '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/orders/$orderId': typeof ApiOrdersOrderIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/login': typeof LoginRoute
+  '/api/account': typeof ApiAccountRoute
+  '/api/admin': typeof ApiAdminRoute
   '/api/analyze': typeof ApiAnalyzeRoute
+  '/api/checks': typeof ApiChecksRoute
   '/api/create-payment': typeof ApiCreatePaymentRoute
   '/api/demo-payment': typeof ApiDemoPaymentRoute
   '/api/midtrans-webhook': typeof ApiMidtransWebhookRoute
+  '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/orders/$orderId': typeof ApiOrdersOrderIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/login': typeof LoginRoute
+  '/api/account': typeof ApiAccountRoute
+  '/api/admin': typeof ApiAdminRoute
   '/api/analyze': typeof ApiAnalyzeRoute
+  '/api/checks': typeof ApiChecksRoute
   '/api/create-payment': typeof ApiCreatePaymentRoute
   '/api/demo-payment': typeof ApiDemoPaymentRoute
   '/api/midtrans-webhook': typeof ApiMidtransWebhookRoute
+  '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/orders/$orderId': typeof ApiOrdersOrderIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/login'
+    | '/api/account'
+    | '/api/admin'
     | '/api/analyze'
+    | '/api/checks'
     | '/api/create-payment'
     | '/api/demo-payment'
     | '/api/midtrans-webhook'
+    | '/api/auth/$'
     | '/api/orders/$orderId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/login'
+    | '/api/account'
+    | '/api/admin'
     | '/api/analyze'
+    | '/api/checks'
     | '/api/create-payment'
     | '/api/demo-payment'
     | '/api/midtrans-webhook'
+    | '/api/auth/$'
     | '/api/orders/$orderId'
   id:
     | '__root__'
     | '/'
+    | '/login'
+    | '/api/account'
+    | '/api/admin'
     | '/api/analyze'
+    | '/api/checks'
     | '/api/create-payment'
     | '/api/demo-payment'
     | '/api/midtrans-webhook'
+    | '/api/auth/$'
     | '/api/orders/$orderId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  LoginRoute: typeof LoginRoute
+  ApiAccountRoute: typeof ApiAccountRoute
+  ApiAdminRoute: typeof ApiAdminRoute
   ApiAnalyzeRoute: typeof ApiAnalyzeRoute
+  ApiChecksRoute: typeof ApiChecksRoute
   ApiCreatePaymentRoute: typeof ApiCreatePaymentRoute
   ApiDemoPaymentRoute: typeof ApiDemoPaymentRoute
   ApiMidtransWebhookRoute: typeof ApiMidtransWebhookRoute
+  ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiOrdersOrderIdRoute: typeof ApiOrdersOrderIdRoute
 }
 
@@ -117,11 +182,39 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/account': {
+      id: '/api/account'
+      path: '/api/account'
+      fullPath: '/api/account'
+      preLoaderRoute: typeof ApiAccountRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/admin': {
+      id: '/api/admin'
+      path: '/api/admin'
+      fullPath: '/api/admin'
+      preLoaderRoute: typeof ApiAdminRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/analyze': {
       id: '/api/analyze'
       path: '/api/analyze'
       fullPath: '/api/analyze'
       preLoaderRoute: typeof ApiAnalyzeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/checks': {
+      id: '/api/checks'
+      path: '/api/checks'
+      fullPath: '/api/checks'
+      preLoaderRoute: typeof ApiChecksRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/create-payment': {
@@ -145,6 +238,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiMidtransWebhookRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/auth/$': {
+      id: '/api/auth/$'
+      path: '/api/auth/$'
+      fullPath: '/api/auth/$'
+      preLoaderRoute: typeof ApiAuthSplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/orders/$orderId': {
       id: '/api/orders/$orderId'
       path: '/api/orders/$orderId'
@@ -157,10 +257,15 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  LoginRoute: LoginRoute,
+  ApiAccountRoute: ApiAccountRoute,
+  ApiAdminRoute: ApiAdminRoute,
   ApiAnalyzeRoute: ApiAnalyzeRoute,
+  ApiChecksRoute: ApiChecksRoute,
   ApiCreatePaymentRoute: ApiCreatePaymentRoute,
   ApiDemoPaymentRoute: ApiDemoPaymentRoute,
   ApiMidtransWebhookRoute: ApiMidtransWebhookRoute,
+  ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiOrdersOrderIdRoute: ApiOrdersOrderIdRoute,
 }
 export const routeTree = rootRouteImport

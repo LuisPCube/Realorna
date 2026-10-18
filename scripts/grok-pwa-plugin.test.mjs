@@ -6,9 +6,9 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
   appNameFromHost,
-  createHeadInjector,
+  createHeadInjector as createWorkspaceHeadInjector,
   grokXCreatorHeadTags,
-  injectGrokPwaHead,
+  injectGrokPwaHead as injectWorkspacePwaHead,
   isDocumentPath,
   isInstallQuery,
   publicAppHost,
@@ -20,6 +20,14 @@ import {
 import { renderInstallPage } from "./grok-pwa-plugin.mjs";
 
 const TEMPLATE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+// Unit fixtures must not inherit Realorna's title or public/og.jpg.
+const FIXTURE_ROOT = mkdtempSync(join(tmpdir(), "pwa-fixture-"));
+function injectGrokPwaHead(html, context = {}) {
+  return injectWorkspacePwaHead(html, { cwd: FIXTURE_ROOT, ...context });
+}
+function createHeadInjector(context = {}) {
+  return createWorkspaceHeadInjector({ cwd: FIXTURE_ROOT, ...context });
+}
 
 test("injects before </head>", () => {
   const out = injectGrokPwaHead("<html><head><title>x</title></head><body></body></html>");

@@ -1,6 +1,7 @@
 import { SYSTEM_PROMPT } from "./prompt";
 import { parseModelJson } from "./contract";
 import type { Source } from "../types";
+import { hasGeminiKeys, withGeminiKey } from "./key-pool";
 
 type GeminiResponse = {
   candidates?: {
@@ -13,8 +14,11 @@ type GeminiResponse = {
 };
 
 function modelChain() {
-  const preferred = process.env.GEMINI_MODEL?.trim() || "gemini-2.0-flash";
-  return [...new Set([preferred, "gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash", "gemini-3.5-flash-lite"])];
+  // Select the model available to YOUR project in AI Studio. No implicit
+  // model upgrades or paid model fallback.
+  const model = process.env.GEMINI_MODEL?.trim();
+  if (!model) throw new Error("gemini_off");
+  return [model];
 }
 
 function textOf(data: GeminiResponse) {
@@ -61,36 +65,22 @@ function cleanTranscript(raw: string) {
 }
 
 export async function transcribeWithGemini(media: MediaPart): Promise<string | null> {
-  const apiKey = process.env.GEMINI_API_KEY?.trim();
-  if (!apiKey) return null;
-  for (const model of modelChain()) {
-    try {
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
-          body: JSON.stringify({
-            contents: [{ role: "user", parts: [media, { text: TRANSCRIBE }] }],
-            generationConfig: { temperature: 0.1, maxOutputTokens: 4096 },
-          }),
-          signal: AbortSignal.timeout(35_000),
-        },
-      );
-      if (res.status === 404 || res.status === 400) continue;
-      if (res.status === 401 || res.status === 403) return null;
-      if (!res.ok) continue;
-      const data = (await res.json()) as GeminiResponse;
-      const text = cleanTranscript(textOf(data));
-      if (text) return text.slice(0, 12000);
-    } catch (err) {
-      console.error("realorna transcribe", model, err instanceof Error ? err.message : err);
-    }
-  }
-  return null;
+  if (!hasGeminiKeys()) return null;
+  try {
+    const model = modelChain()[0];
+    const res = await withGeminiKey((key, signal) => fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+        method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+        body: JSON.stringify({ contents: [{ role: "user", parts: [media, { text: TRANSCRIBE }] }],
+          generationConfig: { temperature: 0.1, maxOutputTokens: 4096 } }), signal,
+      }), Date.now() + 30_000);
+    if (!res.ok) return null;
+    const text = cleanTranscript(textOf(await res.json() as GeminiResponse));
+    return text ? text.slice(0, 12000) : null;
+  } catch { return null; }
 }
 
-async function callModel(model: string, apiKey: string, user: string, withSearch: boolean) {
+async function callModel(model: string, apiKey: string, user: string, withSearch: boolean, signal: AbortSignal) {
   const generationConfig: Record<string, unknown> = {
     temperature: 0.2,
     maxOutputTokens: 2048,
@@ -109,42 +99,23 @@ async function callModel(model: string, apiKey: string, user: string, withSearch
       "x-goog-api-key": apiKey,
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(45_000),
+    signal,
   });
 }
 
 export async function askGemini(user: string): Promise<{ parsed: Record<string, unknown>; sources: Source[] }> {
-  const apiKey = process.env.GEMINI_API_KEY?.trim();
-  if (!apiKey) throw new Error("gemini_off");
-
-  let sawAuth = false;
-  for (const model of modelChain()) {
-    let res: Response;
-    try {
-      res = await callModel(model, apiKey, user, true);
-      if (res.status === 400) res = await callModel(model, apiKey, user, false);
-    } catch (err) {
-      console.error("realorna gemini network", model, err instanceof Error ? err.message : err);
-      continue;
-    }
-    if (res.status === 404) continue;
-    if (res.status === 401 || res.status === 403) {
-      sawAuth = true;
-      console.error("realorna gemini auth", res.status);
-      break;
-    }
-    if (!res.ok) {
-      console.error("realorna gemini", model, res.status);
-      continue;
-    }
-    const data = (await res.json()) as GeminiResponse;
-    const text = textOf(data);
-    const parsed = text ? parseModelJson(text) : null;
-    if (!parsed) {
-      console.error("realorna gemini json", model);
-      continue;
-    }
-    return { parsed, sources: groundedSources(data) };
+  if (!hasGeminiKeys()) throw new Error("gemini_off");
+  const model = modelChain()[0];
+  const deadline = Date.now() + 55_000;
+  let response = await withGeminiKey((key, signal) => callModel(model, key, user, true, signal), deadline);
+  // Some free-tier models do not support search with this generation mode.
+  if (response.status === 400) {
+    await response.body?.cancel();
+    response = await withGeminiKey((key, signal) => callModel(model, key, user, false, signal), deadline);
   }
-  throw new Error(sawAuth ? "gemini_off" : "gemini_failed");
+  if (!response.ok) throw new Error(response.status === 404 ? "gemini_off" : "gemini_failed");
+  const data = await response.json() as GeminiResponse;
+  const parsed = parseModelJson(textOf(data));
+  if (!parsed) throw new Error("gemini_failed");
+  return { parsed, sources: groundedSources(data) };
 }

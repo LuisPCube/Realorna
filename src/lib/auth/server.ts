@@ -30,7 +30,7 @@
  * a verified id via `@/lib/auth/middleware`.
  */
 import { betterAuth } from "better-auth";
-import { bearer, genericOAuth } from "better-auth/plugins";
+import { bearer, genericOAuth, username } from "better-auth/plugins";
 import { tanstackStartCookies } from "better-auth/tanstack-start";
 import { getCookie } from "@tanstack/react-start/server";
 import { randomBytes } from "node:crypto";
@@ -91,7 +91,7 @@ export const authConfigured =
 // it derives the origin per-request from the (proxied) host, validated against the
 // preview allowlist, which makes the OAuth `redirect_uri` the concrete preview URL
 // the broker's preview client accepts.
-const explicitBaseURL = env("BETTER_AUTH_URL");
+const explicitBaseURL = env("BETTER_AUTH_URL") ?? (env("VERCEL_PROJECT_PRODUCTION_URL") ? `https://${env("VERCEL_PROJECT_PRODUCTION_URL")}` : undefined);
 // Explicit `string[]` (not a readonly tuple) — Better Auth's DynamicBaseURLConfig
 // requires a mutable `allowedHosts: string[]`.
 const previewAllowedHosts: string[] = [...PREVIEW_ALLOWED_HOSTS];
@@ -102,6 +102,8 @@ const LOCAL_DEV_ORIGINS: string[] = [
   "http://localhost:8080",
   "http://127.0.0.1:8080",
   "http://[::1]:8080",
+  "http://localhost:8081",
+  "http://127.0.0.1:8081",
 ];
 const baseURL = explicitBaseURL ?? {
   // Include loopback hosts so dynamic baseURL resolves for local email/password
@@ -178,6 +180,16 @@ export const auth = betterAuth({
   // globalThis so HMR doesn't invalidate PGLite-backed sessions (see above).
   secret: env("BETTER_AUTH_SECRET") ?? previewAuthSecret(),
   database,
+  rateLimit: {
+    enabled: true,
+    storage: "database",
+    window: 60,
+    max: 100,
+    customRules: {
+      "/sign-in/username": { window: 60, max: 10 },
+      "/sign-up/email": { window: 60, max: 5 },
+    },
+  },
 
   // CSRF / origin check for credentialed auth POSTs (email sign-up/sign-in, …).
   // See `trustedOrigins` construction above — must cover live preview hosts AND
@@ -211,7 +223,7 @@ export const auth = betterAuth({
   session: { cookieCache: { enabled: true, maxAge: 300 } },
 
   // Local email/password — toggled only via `./email-password` (not a plugin).
-  ...(emailAndPasswordEnabled ? { emailAndPassword: { enabled: true } } : {}),
+  ...(emailAndPasswordEnabled ? { emailAndPassword: { enabled: true, minPasswordLength: 10 } } : {}),
 
   // `__Host-` prefixed cookies: the browser REFUSES any same-named cookie that
   // carries a `Domain` attribute, so a sibling `*.grok.me` app cannot "toss" a
@@ -232,6 +244,9 @@ export const auth = betterAuth({
   },
 
   plugins: [
+    // Username login extends the existing password authenticator. The database
+    // also has a lower(username) unique index, closing signup race conditions.
+    username({ minUsernameLength: 3, maxUsernameLength: 30 }),
     gateIdentitySessions(),
 
     // One genericOAuth provider per upstream (when auth is on), all federating

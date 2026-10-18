@@ -7,6 +7,9 @@ export type DbSource = "neon" | "pglite";
 // "unset" — otherwise production would silently run on the PGLite fallback.
 const rawDatabaseUrl =
   typeof process !== "undefined" ? process.env.DATABASE_URL : undefined;
+if (typeof process !== "undefined" && process.env.VERCEL && !rawDatabaseUrl?.trim()) {
+  throw new Error("DATABASE_URL is required on Vercel. Connect Postgres before deploying.");
+}
 const databaseUrl =
   rawDatabaseUrl && rawDatabaseUrl.trim() ? rawDatabaseUrl : undefined;
 

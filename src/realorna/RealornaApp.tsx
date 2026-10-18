@@ -14,7 +14,11 @@ import {
   X,
 } from "lucide-react";
 import { translate, type CopyKey } from "./i18n";
-import { EXAMPLES, PRICES, PROMOS, findIn, inspectLink, parseLink, uiVerdict, VIDEO } from "./safety";
+import { EXAMPLES, PRICES, findIn, inspectLink, parseLink, uiVerdict, VIDEO } from "./safety";
+import { signOut } from "@/lib/auth/client";
+import { apiRequest, errorMessage, RequestError, say, useAccount } from "./account";
+import { AccountPanel, AdminPanel, TransferDialog } from "./AccountPanels";
+import type { AccountOrder, Attempt } from "./account-types";
 import type { ClaimStatus, FactErrCode, FactOk, Lang, Plan, SafetyItem, Verdict } from "./types";
 
 type Recent = {
@@ -34,7 +38,6 @@ type Phase =
 
 const NEWS_CHIPS = ["BBC", "Kompas", "Detik", "CNN Indonesia", "Reuters"];
 const VIDEO_CHIPS = ["YouTube", "TikTok", "Instagram"];
-const PAY_METHODS = ["QRIS", "GoPay", "OVO", "DANA", "ShopeePay", "Virtual Account"];
 
 function readStore<T>(key: string, fallback: T): T {
   try {
@@ -118,6 +121,13 @@ export function RealornaApp() {
   const [dark, setDark] = useState(false);
   const [payOpen, setPayOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
+  const [working, setWorking] = useState(false);
+  const [adminOpen, setAdminOpen] = useState(false);
+  const [selectedAttempt, setSelectedAttempt] = useState<Attempt | null>(null);
+  const [resumeOrderId, setResumeOrderId] = useState<string | undefined>();
+  const account = useAccount();
+  const handledAttempt = useRef("");
+  const checkRequest = useRef<{ identity: string; key: string; orderId?: string; url: string; plan: Plan; lang: Lang; attemptId?: string } | null>(null);
   const toastTimer = useRef<number>(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const resultRef = useRef<HTMLDivElement>(null);
@@ -136,7 +146,6 @@ export function RealornaApp() {
     const storedPlan = readStore<string>("rl:plan", "regular");
     setLang(nextLang);
     setPlan(storedPlan === "advance" ? "advance" : "regular");
-    setRecent(readStore<Recent[]>("rl:recent", []).slice(0, 5));
     const storedTheme = readStore<string>("rl:theme", "");
     const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
     const isDark = storedTheme === "dark" || (storedTheme !== "light" && prefersDark);
@@ -148,6 +157,27 @@ export function RealornaApp() {
   useEffect(() => {
     document.documentElement.lang = lang;
   }, [lang]);
+
+  useEffect(() => {
+    setRecent(account.user ? readStore<Recent[]>(`rl:recent:${account.user.id}`, []).slice(0, 5) : []);
+    setPhase({ type: "idle" });
+  }, [account.user?.id]);
+
+  useEffect(() => {
+    if (!account.user || account.loading) return;
+    const id = new URLSearchParams(window.location.search).get("attempt");
+    if (!id || handledAttempt.current === id) return;
+    handledAttempt.current = id;
+    const found = account.attempts.find(a => a.attempt_id === id);
+    if (found) { setSelectedAttempt(found); setPlan(found.plan); inputRef.current?.focus(); }
+    else ping(say(lang, "This attempt is unavailable or belongs to another account.", "Kesempatan ini tidak tersedia atau milik akun lain."));
+  }, [account.user?.id, account.loading, account.attempts, lang]);
+
+  useEffect(() => {
+    if (!working) return;
+    const timer = setInterval(() => setPhase(p => p.type === "scan" ? { ...p, step: Math.min(3, p.step + 1) } : p), 1800);
+    return () => clearInterval(timer);
+  }, [working]);
 
   useEffect(() => {
     if (!toastOn) return;
@@ -198,10 +228,11 @@ export function RealornaApp() {
     };
     const next = [item, ...recent.filter((r) => r.url !== result.url)].slice(0, 5);
     setRecent(next);
-    localStorage.setItem("rl:recent", JSON.stringify(next));
+    if (account.user) localStorage.setItem(`rl:recent:${account.user.id}`, JSON.stringify(next));
   }
 
   async function runCheck() {
+    if (working || payOpen) return;
     const raw = url.trim();
     if (!raw) {
       setError("err_empty");
@@ -220,7 +251,65 @@ export function RealornaApp() {
       return;
     }
     setError(null);
-    setPayOpen(true);
+    if (account.loading) { ping(say(lang,"Loading your account…","Memuat akunmu…")); return; }
+    if (account.error) { ping(errorMessage(new RequestError(account.error, 503), lang)); return; }
+    if (!account.user) {
+      window.location.assign(`/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`);
+      return;
+    }
+    const previous = checkRequest.current;
+    if (previous?.orderId && previous.url === raw && previous.plan === plan && previous.lang === lang) {
+      await executeCheck(previous.attemptId);
+      return;
+    }
+    if (account.user.admin || account.attempts.some(a => a.plan === plan)) {
+      await executeCheck(selectedAttempt?.plan === plan ? selectedAttempt.attempt_id : undefined);
+    } else { setResumeOrderId(undefined); setPayOpen(true); }
+  }
+
+  async function analyzeOrder(orderId: string) {
+    const data = await apiRequest<{ report: FactOk }>("/api/analyze", { order_id: orderId });
+    if (!data.report?.ok) throw new RequestError("ai_failed", 502);
+    showReport(data.report);
+  }
+
+  async function executeCheck(attemptId?: string) {
+    if (working) return;
+    setWorking(true); setPayOpen(false);
+    const link = parseLink(url);
+    const looked = link ? inspectLink(link) : null;
+    setPhase({ type: "scan", host: looked?.host || "", video: looked?.video || false, step: 0 });
+    const identity = JSON.stringify({ url: url.trim(), plan, lang, attemptId });
+    if (!checkRequest.current || checkRequest.current.identity !== identity) checkRequest.current = { identity, key: crypto.randomUUID(), url: url.trim(), plan, lang, attemptId };
+    try {
+      if (!checkRequest.current.orderId) {
+        const order = await apiRequest<{ order_id: string }>("/api/checks", { url: url.trim(), plan, lang, attempt_id: attemptId, request_key: checkRequest.current.key });
+        checkRequest.current.orderId = order.order_id;
+      }
+      await analyzeOrder(checkRequest.current.orderId);
+      checkRequest.current = null; setSelectedAttempt(null);
+    } catch (e) {
+      if (e instanceof RequestError && e.code === "attempt_required") {
+        checkRequest.current = null; setSelectedAttempt(null); setPhase({ type: "idle" }); setResumeOrderId(undefined); setPayOpen(true);
+      } else {
+        setPhase({ type: "fail", code: failCode(e instanceof RequestError ? e.code : "ai_failed") });
+        ping(errorMessage(e,lang));
+      }
+    } finally { setWorking(false); await account.refresh(); }
+  }
+
+  async function openOrder(order: AccountOrder) {
+    if (working) return;
+    setPlan(order.plan); setUrl(order.url);
+    if (order.payment_method === "transfer") { setResumeOrderId(order.order_id); setPayOpen(true); return; }
+    setWorking(true); setPhase({ type: "scan", host: parseLink(order.url)?.hostname || "", video: order.plan === "advance", step: 0 });
+    try {
+      if (order.status === "processed") {
+        const stored = await apiRequest<{ report: FactOk }>(`/api/orders/${encodeURIComponent(order.order_id)}`);
+        showReport(stored.report);
+      } else await analyzeOrder(order.order_id);
+    } catch (e) { setPhase({ type: "fail", code: failCode(e instanceof RequestError ? e.code : "ai_failed") }); ping(errorMessage(e,lang)); }
+    finally { setWorking(false); await account.refresh(); }
   }
 
   function showReport(result: FactOk) {
@@ -262,7 +351,7 @@ export function RealornaApp() {
   }
 
   function resetDemo() {
-    localStorage.removeItem("rl:recent");
+    if (account.user) localStorage.removeItem(`rl:recent:${account.user.id}`);
     setRecent([]);
     setUrl("");
     setError(null);
@@ -270,7 +359,7 @@ export function RealornaApp() {
     ping(t("demo_reset"));
   }
 
-  const price = money(PRICES[plan]);
+  const price = account.user?.admin ? say(lang,"Free for admin","Gratis untuk admin") : money(PRICES[plan]);
 
   return (
     <div className="rn" data-plan={plan}>
@@ -292,7 +381,11 @@ export function RealornaApp() {
             >
               {dark ? <Sun size={18} /> : <Moon size={18} />}
             </button>
-            <span className="proto">{t("proto")}</span>
+            {account.loading ? <span className="proto">…</span> : account.user ? <>
+              {account.user.admin && <button className="account-link" type="button" aria-expanded={adminOpen} onClick={() => setAdminOpen(!adminOpen)}>Admin</button>}
+              <span className="username-tag">@{account.user.username}</span>
+              <button className="account-link" type="button" onClick={() => void signOut("/").catch(e => ping(errorMessage(e,lang)))}>{say(lang,"Sign out","Keluar")}</button>
+            </> : <a className="account-link" href="/login">{say(lang,"Sign in / Register","Masuk / Daftar")}</a>}
             <div className="lang" role="group" aria-label={t("lang_label")}>
               <button type="button" aria-pressed={lang === "en"} onClick={() => chooseLang("en")}>
                 EN
@@ -305,11 +398,14 @@ export function RealornaApp() {
         </header>
 
         <main id="top">
+          {account.user?.admin && adminOpen && <AdminPanel lang={lang}/>}
+          {account.error && <p className="form-error" role="alert">{errorMessage(new RequestError(account.error,503),lang)}</p>}
           <section className="hero">
             <h1>{t("h1")}</h1>
             <p className="lead">{t("lead")}</p>
           </section>
 
+          <AccountPanel lang={lang} onAttempt={attempt => {setSelectedAttempt(attempt);choosePlan(attempt.plan);inputRef.current?.focus();}} onOrder={order => void openOrder(order)}/>
           <section className="checker" id="checker" aria-label={t("field_label")}>
             <div className="switch" role="radiogroup" aria-label={t("plan_label")}>
               <span className="thumb" aria-hidden="true" />
@@ -318,6 +414,7 @@ export function RealornaApp() {
                   key={p}
                   type="button"
                   className="opt"
+                  disabled={working || payOpen}
                   role="radio"
                   aria-checked={plan === p}
                   tabIndex={plan === p ? 0 : -1}
@@ -350,6 +447,7 @@ export function RealornaApp() {
                   </label>
                   <input
                     id="url"
+                    disabled={working}
                     ref={inputRef}
                     name="url"
                     type="text"
@@ -391,8 +489,8 @@ export function RealornaApp() {
                     {url ? t("clear") : t("paste")}
                   </button>
                 </div>
-                <button type="button" className="go" disabled={payOpen} onClick={() => void runCheck()}>
-                  {payOpen ? t("checking") : t("check")}
+                <button type="button" className="go" disabled={payOpen || working || account.loading} onClick={() => void runCheck()}>
+                  {payOpen || working ? t("checking") : t("check")}
                 </button>
               </div>
               {error ? (
@@ -413,6 +511,7 @@ export function RealornaApp() {
               </div>
             ) : null}
 
+            {selectedAttempt && <p className="success-line"><GiftNotice/>{say(lang,`Using your ${selectedAttempt.plan === "advance" ? "Advance" : "Regular"} attempt. Paste a link to start.`,`Menggunakan kesempatan ${selectedAttempt.plan === "advance" ? "Advance" : "Regular"}. Tempel tautan untuk mulai.`)}</p>}
             <div className="sources">
               <div className="src-row">
                 <span className="src-label">{t("src_news")}</span>
@@ -500,7 +599,7 @@ export function RealornaApp() {
                   className="link-btn"
                   onClick={() => {
                     setRecent([]);
-                    localStorage.setItem("rl:recent", JSON.stringify([]));
+                    if (account.user) localStorage.setItem(`rl:recent:${account.user.id}`, JSON.stringify([]));
                   }}
                 >
                   {t("recent_clear")}
@@ -604,26 +703,13 @@ export function RealornaApp() {
         {toast}
       </div>
 
-      {payOpen ? (
-        <PayDialog
-          plan={plan}
-          url={url.trim()}
-          lang={lang}
-          t={t}
-          onClose={() => setPayOpen(false)}
-          onFail={(code) => {
-            setPayOpen(false);
-            setPhase({ type: "fail", code });
-          }}
-          onPaid={(report) => {
-            ping(t("pay_ok"));
-            showReport(report);
-          }}
-        />
-      ) : null}
+      {payOpen && <TransferDialog plan={plan} url={url.trim()} lang={lang} resumeOrderId={resumeOrderId}
+        onClose={() => setPayOpen(false)} onApproved={attemptId => void executeCheck(attemptId)}/>}
     </div>
   );
 }
+
+function GiftNotice() { return <Check size={17} aria-hidden="true"/>; }
 
 function ago(ts: number, lang: Lang, t: (k: CopyKey, p?: Record<string, string | number>) => string) {
   const s = Math.round((Date.now() - ts) / 1000);
@@ -981,259 +1067,5 @@ function PlanCard({
         )}
       </button>
     </article>
-  );
-}
-
-function PayDialog({
-  plan,
-  url,
-  lang,
-  t,
-  onClose,
-  onPaid,
-  onFail,
-}: {
-  plan: Plan;
-  url: string;
-  lang: Lang;
-  t: (k: CopyKey, p?: Record<string, string | number>) => string;
-  onClose: () => void;
-  onPaid: (report: FactOk) => void;
-  onFail: (code: FactErrCode) => void;
-}) {
-  const ref = useRef<HTMLDialogElement>(null);
-  const [promo, setPromo] = useState("");
-  const [ticket, setTicket] = useState<{
-    order_id: string;
-    amount: number;
-    demo: boolean;
-    qr_url: string | null;
-    qr_data_url: string | null;
-  } | null>(null);
-  const [creating, setCreating] = useState(false);
-  const [settling, setSettling] = useState(false);
-  const [note, setNote] = useState("");
-  const [left, setLeft] = useState(600);
-  const [timing, setTiming] = useState(false);
-  const onPaidRef = useRef(onPaid);
-  const onFailRef = useRef(onFail);
-  onPaidRef.current = onPaid;
-  onFailRef.current = onFail;
-
-  const discount = PROMOS[promo.trim().toUpperCase()] || 0;
-  const previewTotal = Math.round(PRICES[plan] * (1 - discount));
-  const total = ticket?.amount ?? previewTotal;
-
-  useEffect(() => {
-    const dlg = ref.current;
-    if (dlg && !dlg.open) dlg.showModal();
-  }, []);
-
-  useEffect(() => {
-    if (!timing) return;
-    const timer = window.setInterval(() => setLeft((n) => (n <= 1 ? 0 : n - 1)), 1000);
-    return () => window.clearInterval(timer);
-  }, [timing]);
-
-  useEffect(() => {
-    if (timing && left === 0) {
-      setTiming(false);
-      setNote(t("pay_expired"));
-    }
-  }, [left, timing, t]);
-
-  useEffect(() => {
-    if (!ticket || ticket.demo) return;
-    let stop = false;
-    const tick = async () => {
-      try {
-        const res = await fetch(`/api/orders/${encodeURIComponent(ticket.order_id)}`);
-        if (!res.ok || stop) return;
-        const data = (await res.json()) as { status?: string; error?: string; report?: FactOk };
-        if (stop) return;
-        if (data.status === "processed" && data.report?.ok) {
-          stop = true;
-          onPaidRef.current(data.report);
-        } else if (data.status === "paid") {
-          setSettling(true);
-        } else if (data.status === "failed") {
-          stop = true;
-          onFailRef.current(failCode(data.error));
-        } else if (data.status === "expired") {
-          stop = true;
-          setTiming(false);
-          setNote(t("pay_expired"));
-        }
-      } catch {
-        /* coba lagi pada interval berikutnya */
-      }
-    };
-    void tick();
-    const id = window.setInterval(() => void tick(), 3000);
-    return () => {
-      stop = true;
-      window.clearInterval(id);
-    };
-  }, [ticket, t]);
-
-  async function createPayment() {
-    if (creating || ticket) return;
-    setCreating(true);
-    setNote("");
-    try {
-      const res = await fetch("/api/create-payment", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url, plan, lang, promo }),
-      });
-      const data = (await res.json()) as {
-        error?: string;
-        order_id?: string;
-        amount?: number;
-        demo?: boolean;
-        qr_url?: string | null;
-        qr_data_url?: string | null;
-      };
-      if (!res.ok || !data.order_id) {
-        if (data.error === "video_plan") onFailRef.current("video_plan");
-        else setNote(t("pay_fail"));
-        return;
-      }
-      setTicket({
-        order_id: data.order_id,
-        amount: data.amount || previewTotal,
-        demo: Boolean(data.demo),
-        qr_url: data.qr_url || null,
-        qr_data_url: data.qr_data_url || null,
-      });
-      setLeft(600);
-      setTiming(true);
-    } catch {
-      setNote(t("pay_fail"));
-    } finally {
-      setCreating(false);
-    }
-  }
-
-  async function simulate() {
-    if (!ticket || settling) return;
-    setSettling(true);
-    setNote("");
-    try {
-      const res = await fetch("/api/demo-payment", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ order_id: ticket.order_id }),
-      });
-      const data = (await res.json()) as { error?: string; report?: FactOk };
-      if (!res.ok || !data.report?.ok) {
-        onFailRef.current(failCode(data.error));
-        return;
-      }
-      onPaidRef.current(data.report);
-    } catch {
-      onFailRef.current("ai_failed");
-    } finally {
-      setSettling(false);
-    }
-  }
-
-  const mm = String(Math.floor(left / 60)).padStart(2, "0");
-  const ss = String(left % 60).padStart(2, "0");
-  const qrSrc = ticket?.qr_data_url || ticket?.qr_url || "";
-
-  return (
-    <dialog
-      ref={ref}
-      aria-labelledby="payT"
-      onCancel={(e) => {
-        e.preventDefault();
-        onClose();
-      }}
-    >
-      <h3 id="payT">{t("pay_title")}</h3>
-      <p className="mid">
-        {t(plan === "advance" ? "plan_advance" : "plan_regular")} · {t("per_check")}
-      </p>
-      <input
-        className="promo"
-        value={promo}
-        placeholder={t("promo_ph")}
-        aria-label={t("promo_ph")}
-        disabled={Boolean(ticket) || creating}
-        onChange={(e) => setPromo(e.target.value)}
-      />
-      <p className="mid">{discount ? t("promo_ok") : ""}</p>
-      <div className="methods" role="group">
-        {PAY_METHODS.map((m) => (
-          <button key={m} type="button" aria-pressed={m === "QRIS"} disabled={m !== "QRIS"}>
-            {m}
-          </button>
-        ))}
-      </div>
-      {ticket ? qrSrc ? <img className="qr" src={qrSrc} alt="QRIS" /> : <QrMark /> : null}
-      {ticket && timing ? (
-        <div className="cd">
-          {mm}:{ss}
-        </div>
-      ) : null}
-      <p className="mid">
-        <b>
-          {t("pay_total")} {money(total)}
-        </b>
-        {ticket ? ` · ${settling ? t("pay_checking") : ticket.demo ? t("pay_demo") : t("pay_scan")}` : null}
-      </p>
-      {note ? (
-        <p className="error" role="alert">
-          <AlertTriangle size={18} aria-hidden="true" />
-          <span>{note}</span>
-        </p>
-      ) : (
-        <p className="mid">{t("refund_note")}</p>
-      )}
-      <div className="dlg-row">
-        <button type="button" className="btn" onClick={onClose}>
-          {t("close")}
-        </button>
-        {ticket?.demo ? (
-          <button type="button" className="btn primary" disabled={settling || left === 0} onClick={() => void simulate()}>
-            {settling ? t("pay_checking") : t("pay_sim")}
-          </button>
-        ) : (
-          <button type="button" className="btn primary" disabled={creating || Boolean(ticket)} onClick={() => void createPayment()}>
-            {creating ? t("pay_loading") : ticket ? t("pay_wait") : t("pay_start")}
-          </button>
-        )}
-      </div>
-    </dialog>
-  );
-}
-
-function QrMark() {
-  const cells: { x: number; y: number }[] = [];
-  let n = 7;
-  for (let y = 0; y < 21; y++) {
-    for (let x = 0; x < 21; x++) {
-      n = (n * 9301 + 49297) % 233280;
-      const finder = (x < 7 && y < 7) || (x > 13 && y < 7) || (x < 7 && y > 13);
-      if (!finder && n / 233280 > 0.5) cells.push({ x, y });
-    }
-  }
-  const finder = (x: number, y: number) => (
-    <g key={`${x}-${y}`}>
-      <rect className="ink" x={x} y={y} width={7} height={7} />
-      <rect className="paper" x={x + 1} y={y + 1} width={5} height={5} />
-      <rect className="ink" x={x + 2} y={y + 2} width={3} height={3} />
-    </g>
-  );
-  return (
-    <svg className="qr" viewBox="0 0 21 21" role="img" aria-label="QR">
-      {cells.map((c) => (
-        <rect key={`${c.x}-${c.y}`} className="ink" x={c.x} y={c.y} width={1} height={1} />
-      ))}
-      {finder(0, 0)}
-      {finder(14, 0)}
-      {finder(0, 14)}
-    </svg>
   );
 }

@@ -3,9 +3,9 @@ import { inspectLink, isSeverePhish, parseLink } from "../safety";
 import type { FactContract, FactErrCode, FactOk, Lang, Plan } from "../types";
 import { contractFromModel, contractFromReport, reportFromContract } from "./contract";
 import { askGemini } from "./gemini";
+import { hasGeminiKeys } from "./key-pool";
 import { transcribeLink, type Transcript } from "./transcript";
 import {
-  claimPending,
   claimRetry,
   getOrder,
   markFailed,
@@ -105,7 +105,7 @@ export async function checkOrder(order: { url: string; plan: Plan; lang: Lang })
     ]);
   }
 
-  if (!process.env.GEMINI_API_KEY?.trim()) {
+  if (!hasGeminiKeys()) {
     const fallback = await runAnalysis(order);
     if (!fallback.ok) throw new CheckError(fallback.code);
     const report: FactOk = { ...fallback, engine: fallback.mode === "ai" ? "grok" : undefined };
@@ -179,7 +179,7 @@ export async function checkOrder(order: { url: string; plan: Plan; lang: Lang })
     extra = answer.sources;
   } catch (err) {
     const message = err instanceof Error ? err.message : "";
-    throw new CheckError(message === "gemini_off" ? "ai_unavailable" : "ai_failed");
+    throw new CheckError(message === "gemini_off" ? "ai_unavailable" : message === "gemini_quota" ? "rate" : "ai_failed");
   }
 
   const contract = contractFromModel(parsed, extra, order.lang);
@@ -204,27 +204,14 @@ export async function checkOrder(order: { url: string; plan: Plan; lang: Lang })
 export async function fulfillClaimed(order: OrderRow) {
   try {
     const out = await checkOrder(order);
-    await markProcessed(order.order_id, out.contract, out.report);
+    await markProcessed(order.order_id, out.contract, out.report, order.claim_token);
     return out;
   } catch (err) {
     const code = err instanceof CheckError ? err.code : "ai_failed";
-    await markFailed(order.order_id, code);
+    await markFailed(order.order_id, code, order.claim_token);
     if (err instanceof CheckError) throw err;
     throw new CheckError("ai_failed");
   }
-}
-
-export async function settlePending(orderId: string) {
-  const claimed = await claimPending(orderId);
-  if (!claimed) {
-    const existing = await getOrder(orderId);
-    if (existing?.status === "processed") return { ignored: true as const, order: existing, out: null };
-    if (existing?.status === "paid") return { ignored: true as const, order: existing, out: null };
-    return { ignored: true as const, order: existing, out: null };
-  }
-  const out = await fulfillClaimed(claimed);
-  const order = await getOrder(orderId);
-  return { ignored: false as const, order, out };
 }
 
 export async function retryCheck(orderId: string) {
@@ -234,7 +221,7 @@ export async function retryCheck(orderId: string) {
     const stored = readStored(current);
     return { order: current, result: stored.result, report: stored.report };
   }
-  if (current.status === "pending" || current.status === "expired") {
+  if (!["paid", "failed", "processing"].includes(current.status) || !["credit", "admin"].includes(current.payment_method)) {
     throw new CheckError("invalid");
   }
   const claimed = await claimRetry(orderId);

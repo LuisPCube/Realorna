@@ -1296,3 +1296,85 @@ img.qr {
     border: 0;
   }
 }
+
+/* Accounts and transfer screens share the checker's existing theme tokens. */
+.rn .account-link { display:inline-flex; align-items:center; justify-content:center; gap:.5rem; min-height:44px; padding:.5rem .75rem; border:1px solid var(--line); border-radius:.75rem; background:var(--surface); color:var(--ink); font:inherit; font-weight:600; text-decoration:none; }
+.rn .username-tag { max-width:10rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:.875rem; color:var(--ink-2); }
+.rn .account-card { padding:1.5rem; background:var(--surface); color:var(--ink); border:1px solid var(--line); border-radius:1.25rem; box-shadow:var(--shadow); margin-bottom:1.5rem; }
+.rn .account-card h2 { margin:0; font-family:var(--font-display); font-size:1.5rem; line-height:1.3; }
+.rn .account-section-head { display:flex; align-items:center; justify-content:space-between; gap:1rem; margin-bottom:1rem; }
+.rn .eyebrow { display:block; font-size:.75rem; letter-spacing:.12em; font-weight:700; color:var(--accent-text); margin-bottom:.4rem; }
+.rn .icon-action { width:44px; height:44px; flex-shrink:0; display:grid; place-items:center; border:1px solid var(--line); border-radius:.75rem; background:var(--surface-2); color:var(--ink); }
+.rn .stack-form { display:grid; gap:1rem; min-width:0; }
+.rn .stack-form label, .rn label.stack-form { display:grid; gap:.5rem; font-size:.9rem; font-weight:600; }
+.rn .stack-form input:not([type=checkbox]), .rn .attempt-share input { box-sizing:border-box; width:100%; min-width:0; min-height:46px; border:1px solid var(--line-strong); border-radius:.75rem; padding:.75rem; color:var(--ink); background:var(--surface-2); font:inherit; }
+.rn .stack-form small { color:var(--ink-2); font-size:.8rem; margin-top:-.5rem; }
+.rn .stack-form input:focus-visible, .rn .attempt-share input:focus-visible { outline:2px solid var(--focus); outline-offset:2px; }
+.rn .stack-form .check-label { display:flex; align-items:center; gap:.75rem; font-weight:400; min-height:44px; }
+.rn .check-label input { width:20px; height:20px; accent-color:var(--accent); flex-shrink:0; }
+.rn .wide { width:100%; min-height:46px; justify-content:center; gap:.5rem; }
+.rn .form-error { background:var(--bad-soft); color:var(--bad); border-radius:.75rem; padding:.75rem 1rem; font-size:.9rem; overflow-wrap:anywhere; }
+.rn .success-line { display:flex; align-items:center; gap:.5rem; color:var(--ok); font-size:.9rem; }
+.rn .success-line svg { flex-shrink:0; }
+.rn .credit-grid { display:grid; grid-template-columns:1fr 1fr; gap:1rem; }
+.rn .credit-grid > div { display:grid; grid-template-columns:1fr auto; gap:.25rem .5rem; padding:1rem; border-radius:1rem; border:1px solid var(--line); background:var(--surface-2); }
+.rn .credit-grid strong { font-family:var(--font-display); font-size:1.75rem; line-height:1.2; }
+.rn .credit-grid small { grid-column:1/-1; font-size:.75rem; color:var(--ink-2); }
+.rn .account-details { border-top:1px solid var(--line); margin-top:1rem; padding-top:.75rem; }
+.rn .account-details summary { min-height:44px; cursor:pointer; color:var(--ink-2); font-size:.9rem; font-weight:600; }
+.rn .account-list, .rn .audit-list { list-style:none; padding:0; margin:0; }
+.rn .account-list li { display:flex; align-items:center; justify-content:space-between; gap:1rem; padding:.75rem 0; border-bottom:1px solid var(--line); }
+.rn .account-list li:last-child { border-bottom:0; }
+.rn .account-list li > span { display:flex; align-items:center; flex-wrap:wrap; gap:.5rem; min-width:0; }
+.rn .account-list small { color:var(--ink-2); font-size:.8rem; }
+.rn .account-list .account-order-summary { display:grid; gap:.25rem; min-width:0; overflow-wrap:anywhere; }
+.rn .account-list .btn { min-height:44px; flex-shrink:0; }
+.rn .admin-panel { margin-top:1rem; }
+.rn .account-tabs { display:flex; gap:.5rem; border-bottom:1px solid var(--line); margin-bottom:1rem; padding-bottom:.5rem; }
+.rn .account-tabs button { display:flex; align-items:center; justify-content:center; gap:.5rem; min-height:44px; flex:1; padding:.5rem .75rem; border:0; border-radius:.75rem; background:var(--surface-2); color:var(--ink-2); font:inherit; font-size:.9rem; font-weight:600; }
+.rn .account-tabs button[aria-selected=true] { background:var(--reg-soft); color:var(--reg-text); }
+.rn .count-tag { font-size:.75rem; padding:0 .4rem; border-radius:1rem; color:var(--ink); background:var(--line); }
+.rn .grant-buttons { display:flex; flex-wrap:wrap; gap:.75rem; }
+.rn .grant-buttons .btn { flex:1; min-height:46px; gap:.5rem; justify-content:center; }
+.rn .advance-button { border-color:var(--adv); background:var(--adv-soft); color:var(--adv-text); }
+.rn .attempt-share { margin-top:1rem; display:grid; gap:.5rem; font-size:.9rem; }
+.rn .attempt-share > div { display:flex; gap:.5rem; }
+.rn .attempt-share .btn { min-height:44px; gap:.5rem; }
+.rn .audit-list li { display:grid; gap:.25rem; padding:.75rem 0; font-size:.8rem; border-bottom:1px solid var(--line); }
+.rn .audit-list time { color:var(--ink-2); }
+.rn .approval-card { border:1px solid var(--line); border-radius:1rem; padding:1rem; margin-top:1rem; }
+.rn .auth-wrap { max-width:1100px; }
+.rn .auth-layout { display:grid; grid-template-columns:1fr 1fr; align-items:center; gap:3rem; padding:4rem 0; }
+.rn .auth-story h1 { font-family:var(--font-display); font-size:3.5rem; line-height:1.06; white-space:pre-line; margin:1rem 0 1.5rem; letter-spacing:-.04em; }
+.rn .auth-story > p { color:var(--ink-2); font-size:1.1rem; max-width:24rem; }
+.rn .auth-story .auth-assurance { display:flex; align-items:center; gap:.75rem; font-size:.9rem; margin-top:2rem; }
+.rn .auth-card { margin:0; padding:2rem; }
+.rn .auth-card h2 { margin-bottom:1.5rem; }
+.rn .auth-toggle { margin:1.5rem 0 0; font-size:.9rem; color:var(--ink-2); }
+.rn .auth-toggle .link-btn { min-height:44px; }
+.rn .transfer-dialog { text-align:left; width:min(480px, calc(100vw - 2rem)); max-height:calc(100dvh - 2rem); overflow-y:auto; box-sizing:border-box; padding:1.5rem; }
+.rn .transfer-dialog h2 { font-family:var(--font-display); font-size:1.6rem; margin:.5rem 0; line-height:1.2; }
+.rn .transfer-total { display:block; text-align:center; font-family:var(--font-display); font-size:2rem; margin:1rem 0; }
+.rn .transfer-details { margin:1rem 0; border:1px solid var(--line); border-radius:1rem; padding:1rem; }
+.rn .transfer-details > div { margin-bottom:.75rem; }
+.rn .transfer-details > div:last-child { margin:0; }
+.rn .transfer-details dt { color:var(--ink-2); font-size:.8rem; }
+.rn .transfer-details dd { margin:0; font-weight:600; overflow-wrap:anywhere; }
+.rn .status-pill { padding:.75rem; border-radius:.75rem; background:var(--surface-2); text-align:center; }
+@media(max-width:720px) {
+  .rn .top { flex-wrap:wrap; gap:.75rem; }
+  .rn .top-right { flex-wrap:wrap; justify-content:flex-end; gap:.4rem; }
+  .rn .username-tag { max-width:6rem; }
+  .rn .account-card { padding:1rem; }
+  .rn .auth-layout { grid-template-columns:1fr; gap:1.5rem; padding:1.5rem 0; }
+  .rn .auth-story h1 { font-size:2.5rem; margin:.5rem 0 1rem; }
+  .rn .auth-story .auth-assurance { display:none; }
+  .rn .auth-card { padding:1.5rem; }
+  .rn .account-list li { flex-wrap:wrap; }
+  .rn .account-list li > span { flex:1 1 55%; }
+  .rn .account-tabs button { font-size:.8rem; }
+  .rn .grant-buttons { flex-direction:column; }
+  .rn .credit-grid { gap:.5rem; }
+  .rn .credit-grid > div { padding:.75rem; }
+}
+@media print { .rn .account-card, .rn .auth-layout, .rn .transfer-dialog { display:none; } }

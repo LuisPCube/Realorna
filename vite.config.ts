@@ -39,9 +39,15 @@ function pgliteBootstrapPlugin(): Plugin {
       try {
         const mod = (await server.ssrLoadModule("/src/lib/db.ts")) as {
           ensureDbReady?: () => Promise<void>;
+          getPglite: () => Promise<import("@electric-sql/pglite").PGlite>;
         };
         if (typeof mod.ensureDbReady === "function") {
           await mod.ensureDbReady();
+            if (!process.env.DATABASE_URL?.trim() && process.env.ADMIN_PASSWORD) {
+              const { provisionAdmin } = await import("./scripts/admin-account.mjs");
+              const pg = await mod.getPglite();
+              await pg.transaction(async tx => { await provisionAdmin(async (text: string, params: unknown[]) => (await tx.query(text, params)).rows); });
+            }
         }
       } catch (err) {
         console.error("[app-builder] DB bootstrap failed:", err);

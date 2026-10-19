@@ -4,6 +4,9 @@ import type { FactContract, FactErrCode, FactOk, Lang, Plan } from "../types";
 import { contractFromModel, reportFromContract } from "./contract";
 import { askOpenAI } from "./openai";
 import { AiRateLimitError, hasOpenAIKeys } from "./key-pool";
+import { AiServiceError } from "./ai-errors";
+import { CheckError, asCheckError } from "./check-errors";
+export { CheckError } from "./check-errors";
 import { transcribeLink, type Transcript } from "./transcript";
 import {
   claimRetry,
@@ -13,14 +16,6 @@ import {
   readStored,
   type OrderRow,
 } from "./orders";
-
-export class CheckError extends Error {
-  code: FactErrCode;
-  constructor(code: FactErrCode, public retryAfterSeconds = 0, public retryReason: "rate" | "quota" | "busy" = "rate") {
-    super(code);
-    this.code = code;
-  }
-}
 
 function structural(
   input: { url: string; plan: Plan; lang: Lang },
@@ -181,7 +176,7 @@ export async function checkOrder(order: { url: string; plan: Plan; lang: Lang })
     parsed = answer.parsed;
     extra = answer.sources;
   } catch (err) {
-    if (err instanceof AiRateLimitError) throw new CheckError("rate", err.retryAfterSeconds, err.reason);
+    if (err instanceof AiRateLimitError || err instanceof AiServiceError) throw asCheckError(err);
     const message = err instanceof Error ? err.message : "";
     throw new CheckError(message === "openai_off" ? "ai_unavailable" : message === "ai_quota" ? "rate" : "ai_failed");
   }
@@ -208,9 +203,7 @@ export async function fulfillClaimed(order: OrderRow) {
     await markProcessed(order.order_id, out.contract, out.report, order.claim_token);
     return out;
   } catch (err) {
-    const failure = err instanceof CheckError ? err
-      : err instanceof AiRateLimitError ? new CheckError("rate", err.retryAfterSeconds, err.reason)
-      : new CheckError("ai_failed");
+    const failure = asCheckError(err);
     await markFailed(order.order_id, failure.code, order.claim_token, failure.retryAfterSeconds);
     throw failure;
   }
@@ -227,7 +220,8 @@ export async function retryCheck(orderId: string) {
     throw new CheckError("invalid");
   }
   const wait = current.retry_after_at ? Math.ceil((new Date(current.retry_after_at).getTime() - Date.now()) / 1000) : 0;
-  if (wait > 0) throw new CheckError("rate", wait);
+  if (wait > 0) throw new CheckError(current.error === "ai_busy" ? "ai_busy" : "rate", wait,
+    current.error === "ai_busy" ? "busy" : "rate", { origin: "saved_check" });
   const claimed = await claimRetry(orderId);
   if (!claimed) {
     const again = await getOrder(orderId);
@@ -236,7 +230,8 @@ export async function retryCheck(orderId: string) {
       return { order: again, result: stored.result, report: stored.report };
     }
     const wait = again?.retry_after_at ? Math.ceil((new Date(again.retry_after_at).getTime() - Date.now()) / 1000) : 0;
-    if (wait > 0) throw new CheckError("rate", wait);
+    if (wait > 0) throw new CheckError(again?.error === "ai_busy" ? "ai_busy" : "rate", wait,
+      again?.error === "ai_busy" ? "busy" : "rate", { origin: "saved_check" });
     throw new CheckError("ai_failed");
   }
   const out = await fulfillClaimed(claimed);

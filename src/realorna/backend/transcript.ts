@@ -1,6 +1,7 @@
 import { isPublicHost } from "../engine.server";
 import { transcribeWithOpenAI } from "./openai";
 import { AiRateLimitError } from "./key-pool";
+import { AiServiceError } from "./ai-errors";
 
 export type Transcript = {
   text: string;
@@ -237,8 +238,8 @@ async function fromMediaPage(html: string | null, deadline: number) {
       const text = await transcribeWithOpenAI(file, Math.min(deadline, Date.now() + 50_000));
       if (text && text.length >= 20) return { text: text.slice(0, 12000), source: "openai_audio" as const, truncated: text.length > 12000 };
     } catch (err) {
-      if (err instanceof AiRateLimitError) throw err;
-      console.error("realorna media", err instanceof Error ? err.message : err);
+      if (err instanceof AiRateLimitError || err instanceof AiServiceError) throw err;
+      console.error("realorna media", err instanceof Error ? err.name : "Error");
     }
   }
   return null;
@@ -255,7 +256,7 @@ export async function transcribeLink(input: { url: string; host: string; html: s
       const captions = await youtubeCaptions(id, deadline);
       if (captions.length >= 40) return { text: captions.slice(0, 12000), source: "youtube_captions", truncated: captions.length > 12000 };
     } catch (err) {
-      console.error("realorna captions", err instanceof Error ? err.message : err);
+      console.error("realorna captions", err instanceof Error ? err.name : "Error");
     }
     // The transcription API accepts media bytes, not a YouTube page URL.
     // Without public captions or a downloadable media file, report unreadable.
@@ -264,8 +265,8 @@ export async function transcribeLink(input: { url: string; host: string; html: s
   try {
     return await fromMediaPage(input.html, deadline);
   } catch (err) {
-    if (err instanceof AiRateLimitError) throw err;
-    console.error("realorna transcript", err instanceof Error ? err.message : err);
+    if (err instanceof AiRateLimitError || err instanceof AiServiceError) throw err;
+    console.error("realorna transcript", err instanceof Error ? err.name : "Error");
     return null;
   }
 }

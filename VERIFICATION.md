@@ -1,5 +1,18 @@
 # Verification record
 
+## Busy / timeout follow-up to the 19 October 2026 release
+
+| Check | Result |
+| --- | --- |
+| `npm run typecheck` and `npm run build` | Passed for the final source; Nitro/Vercel output generated. Local build skipped real database migration and admin seeding because no hosted database was configured. |
+| `npm test` | Passed: 197 script tests and 59 TypeScript tests (256 total). |
+| `npm run test:ai-rate-limit` | Passed: 19 scenarios. Includes a held 36-second lease producing a short capacity retry without releasing the active owner; timeout cleanup without duplicate POSTs; provider errors retaining safe diagnostics; no invented quota countdown; recovered credit availability; real Retry-After preservation; unexpected credential-store failure cleanup; and existing pacing/failover/lease/media checks. |
+| `npm run test:factcheck` | Passed: 20 scenarios. Includes server-rendered pending state with no fabricated completed stages and distinct busy/quota/timeout messages in Indonesian and English, alongside the existing claim/evidence/report checks. |
+| `npm run test:payments` | Passed: 14 scenarios. Includes repeated saved busy checks returning HTTP 503 / `busy` while keeping exactly one consumed attempt and one order; real provider rate-limit retries still return HTTP 429 and retain Retry-After. |
+| Browser and live provider verification | Not run. The managed environment has no supported browser-control path. All provider responses were synthetic, and no live OpenAI key, Vercel database or deployment credentials were used. |
+
+The observed production `busy` response established how the app classified the failure, not whether the original cause was an active worker, an interrupted worker or a transient-error pause. This patch distinguishes those origins for future failures and corrects request handling; it does not claim to prove the cause of the earlier production failure or guarantee live news checks succeed. Shared capacity remains one in-flight request; genuine provider waits and existing saved deadlines are not erased. New diagnostics omit submitted URLs, article content, keys, cookies and raw provider messages.
+
 ## 19 October 2026 — OpenAI and Real / Nah
 
 | Check | Result |

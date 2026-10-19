@@ -10,8 +10,7 @@ process.env.OPENAI_MAX_ATTEMPTS = "3";
 process.env.OPENAI_MAX_QUEUE_WAIT_MS = "2000";
 process.env.OPENAI_RETRY_BASE_MS = "250";
 const { createServer } = await import("vite");
-const server = await createServer({ server: { host: "127.0.0.1", port: 8092, strictPort: true }, logLevel: "error" });
-await server.listen();
+const server = await createServer({ server: { middlewareMode: true }, logLevel: "error" });
 const originalFetch = globalThis.fetch;
 const checks = [];
 try {
@@ -22,6 +21,8 @@ try {
   const gate = await server.ssrLoadModule("/src/realorna/backend/ai-throttle.ts");
   const policy = await server.ssrLoadModule("/src/realorna/backend/ai-rate-policy.ts");
   const openai = await server.ssrLoadModule("/src/realorna/backend/openai.ts");
+  const errors = await server.ssrLoadModule("/src/realorna/backend/check-errors.ts");
+  const { AiServiceError } = await server.ssrLoadModule("/src/realorna/backend/ai-errors.ts");
   async function test(name, fn) {
     // This database is isolated by the guard and dbSource assertion above.
     await sql`delete from fact_ai_throttle`;
@@ -102,8 +103,70 @@ try {
     const body = { error: { code: "insufficient_quota" } };
     await assert.rejects(() => pool.withOpenAIKey(async () => {
       calls++; return new Response(JSON.stringify(body), { status: 429 });
-    }, Date.now() + 5000), error => error.reason === "quota" && error.retryAfterSeconds >= 3600);
+    }, Date.now() + 5000), error => error.code === "ai_quota" && !error.retryAfterSeconds);
     assert.equal(calls, 1);
+    const [state] = await sql`select blocked_until, lease_id from fact_ai_throttle`;
+    assert.ok(new Date(state.blocked_until).getTime() <= Date.now()); assert.equal(state.lease_id, null);
+    // The same configured key can work after credits are restored without an hour-long app lock.
+    const restored = await pool.withOpenAIKey(async () => { calls++; return new Response("{}"); }, Date.now() + 5000);
+    assert.equal(restored.status, 200); assert.equal(calls, 2);
+  });
+  await test("A 36-second occupied lease offers a short capacity retry without releasing the active request", async () => {
+    const held = await gate.acquireAiSlot(Date.now() + 5000);
+    await sql`update fact_ai_throttle set next_request_at = now() - interval '1 second',
+      lease_until = now() + interval '36 seconds'`;
+    process.env.OPENAI_MAX_QUEUE_WAIT_MS = "0";
+    let calls = 0; let failure;
+    try { await pool.withOpenAIKey(async () => { calls++; return new Response("{}"); }, Date.now() + 5000); }
+    catch (error) { failure = errors.asCheckError(error); }
+    assert.equal(calls, 0); assert.equal(failure.code, "ai_busy");
+    const response = errors.checkErrorResponse(failure); const body = await response.json();
+    assert.equal(response.status, 503); assert.equal(body.retry_reason, "busy");
+    assert.equal(body.error_origin, "app_queue"); assert.equal(body.retry_after_seconds, 3);
+    assert.equal(Number(response.headers.get("Retry-After")), body.retry_after_seconds);
+    assert.equal(body.provider_status, undefined);
+    const [state] = await sql`select lease_id from fact_ai_throttle`; assert.equal(state.lease_id, held.id);
+    await gate.releaseAiSlot(held);
+  });
+  await test("A timed-out POST releases the slot and stops without silently repeating the request", async () => {
+    let calls = 0; let failure;
+    try { await pool.withOpenAIKey(async () => { calls++; throw new DOMException("fixture-private-data", "TimeoutError"); }, Date.now() + 5000); }
+    catch (error) { failure = errors.asCheckError(error); }
+    assert.equal(calls, 1); assert.equal(failure.code, "ai_timeout");
+    const response = errors.checkErrorResponse(failure); const body = await response.json();
+    assert.equal(response.status, 504); assert.equal(body.error_origin, "transport");
+    assert.equal(body.diagnostic_reason, "request_timeout"); assert.equal(response.headers.get("Retry-After"), null);
+    assert.doesNotMatch(JSON.stringify(body), /fixture-private-data|fixture-first/);
+    const [state] = await sql`select lease_id from fact_ai_throttle`; assert.equal(state.lease_id, null);
+  });
+  await test("An unavailable provider remains identifiable when its retry is delayed by the shared gate", async () => {
+    let calls = 0; let failure;
+    try { await pool.withOpenAIKey(async () => {
+      calls++; return new Response(JSON.stringify({ error: { code: "server_is_overloaded", message: "fixture-private-data" } }),
+        { status: 503, headers: { "Retry-After": "60", "x-request-id": "req_fixture" } });
+    }, Date.now() + 5000); } catch (error) { failure = errors.asCheckError(error); }
+    assert.equal(calls, 1); assert.equal(failure.code, "ai_failed");
+    const response = errors.checkErrorResponse(failure); const body = await response.json();
+    assert.equal(response.status, 502); assert.equal(body.provider_status, 503);
+    assert.equal(body.provider_code, "server_is_overloaded"); assert.equal(body.provider_request_id, "req_fixture");
+    assert.doesNotMatch(JSON.stringify(body), /fixture-private-data|fixture-first/);
+  });
+  await test("Billing codes and insufficient_quota types require action and do not promise a reset countdown", async () => {
+    assert.equal(policy.providerRetryInfo(new Response("", { status: 429 }),
+      { error: { code: "new_billing_code", type: "insufficient_quota" } }).quotaExhausted, true);
+    const failure = errors.asCheckError(new AiServiceError("ai_quota", { origin: "openai", provider_status: 429, provider_code: "credit_balance_exhausted" }));
+    const response = errors.checkErrorResponse(failure); const body = await response.json();
+    assert.equal(response.status, 503); assert.equal(body.error, "ai_quota");
+    assert.equal(body.retry_after_seconds, undefined); assert.equal(response.headers.get("Retry-After"), null);
+  });
+  await test("A real provider rate-limit hint remains a 429 with its request ID and minimum delay", async () => {
+    let failure;
+    try { await pool.withOpenAIKey(async () => new Response(JSON.stringify({ error: { code: "rate_limit_exceeded" } }),
+      { status: 429, headers: { "Retry-After": "60", "x-request-id": "req_rate_fixture" } }), Date.now() + 5000); }
+    catch (error) { failure = errors.asCheckError(error); }
+    const response = errors.checkErrorResponse(failure); const body = await response.json();
+    assert.equal(response.status, 429); assert.equal(body.error, "rate"); assert.equal(body.error_origin, "openai");
+    assert.equal(body.provider_request_id, "req_rate_fixture"); assert.ok(Number(response.headers.get("Retry-After")) >= 60);
   });
   await test("Repeated short 429 responses stop after the configured maximum attempts", async () => {
     let calls = 0;
@@ -131,6 +194,17 @@ try {
     await gate.releaseAiSlot(first, { success: true });
     const [state] = await sql`select lease_id from fact_ai_throttle`;
     assert.equal(state.lease_id, next.id); await gate.releaseAiSlot(next, { success: true });
+  });
+  await test("An unexpected credential-store failure releases the request slot", async () => {
+    const query = sql.query;
+    sql.query = async (text, params) => {
+      if (text.includes("insert into fact_ai_key_cooldowns")) throw new Error("fixture database failure");
+      return query(text, params);
+    };
+    try {
+      await assert.rejects(() => pool.withOpenAIKey(async () => new Response("{}", { status: 401 }), Date.now() + 5000), /fixture database failure/);
+    } finally { sql.query = query; }
+    const [state] = await sql`select lease_id from fact_ai_throttle`; assert.equal(state.lease_id, null);
   });
   await test("Generic 400 responses do not trigger duplicate search fallback requests", async () => {
     let calls = 0;

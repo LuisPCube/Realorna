@@ -3,6 +3,7 @@ import { SYSTEM_PROMPT } from "./prompt";
 import { hasOpenAIKeys, withOpenAIKey } from "./key-pool";
 import { evidenceUrl, parseModelJson } from "./contract";
 import type { Source } from "../types";
+import { AiServiceError, providerDiagnostic, type AiDiagnostic } from "./ai-errors";
 
 const ClaimSchema = z.object({
   text: z.string(), status: z.enum(["benar", "salah", "keliru", "belum_jelas"]),
@@ -27,8 +28,9 @@ type ResponseData = {
   }[];
 };
 
-export function extractResponse(data: ResponseData) {
-  if (data.status !== "completed") throw new Error("openai_failed");
+export function extractResponse(data: ResponseData, diagnostic: AiDiagnostic = { origin: "openai" }) {
+  const failed = (reason: string) => new AiServiceError("ai_failed", { ...diagnostic, reason });
+  if (data.status !== "completed") throw failed(data.status === "incomplete" ? "incomplete_response" : "response_not_completed");
   const sources: Source[] = [];
   const seen = new Set<string>();
   const add = (raw: string | undefined, title = "") => {
@@ -47,7 +49,7 @@ export function extractResponse(data: ResponseData) {
       if (item.action?.type === "open_page") add(item.action.url);
     }
     for (const part of item.content ?? []) {
-      if (part.type === "refusal") throw new Error("openai_failed");
+      if (part.type === "refusal") throw failed("refusal");
       if (part.type === "output_text") {
         if (part.text) text.push(part.text);
         for (const citation of part.annotations ?? []) if (citation.type === "url_citation") add(citation.url, citation.title);
@@ -55,9 +57,9 @@ export function extractResponse(data: ResponseData) {
     }
   }
   // No search-free fallback. Do not silently turn model memory into evidence.
-  if (!searched) throw new Error("openai_failed");
+  if (!searched) throw failed("search_missing");
   const parsed = parseModelJson(text.join("\n"));
-  if (!parsed || !ModelSchema.safeParse(parsed).success) throw new Error("openai_failed");
+  if (!parsed || !ModelSchema.safeParse(parsed).success) throw failed("invalid_output");
   return { parsed, sources };
 }
 
@@ -66,8 +68,8 @@ export async function askOpenAI(user: string, deadline = Date.now() + 100_000) {
   if (!hasOpenAIKeys() || !model) throw new Error("openai_off");
   const schema = z.toJSONSchema(ModelSchema);
   delete schema.$schema;
-  const response = await withOpenAIKey((key, signal) => fetch("https://api.openai.com/v1/responses", {
-    method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+  const response = await withOpenAIKey((key, signal, requestId) => fetch("https://api.openai.com/v1/responses", {
+    method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}`, "X-Client-Request-Id": requestId },
     body: JSON.stringify({
       model, store: false, instructions: SYSTEM_PROMPT, input: user,
       tools: [{ type: "web_search", search_context_size: "medium" }], tool_choice: "required",
@@ -75,8 +77,12 @@ export async function askOpenAI(user: string, deadline = Date.now() + 100_000) {
       text: { format: { type: "json_schema", name: "realorna_fact_check", strict: true, schema } },
     }), signal,
   }), deadline);
-  if (!response.ok) throw new Error([400, 401, 403, 404].includes(response.status) ? "openai_off" : "openai_failed");
-  return extractResponse(await response.json() as ResponseData);
+  if (!response.ok) throw new AiServiceError([400, 401, 403, 404].includes(response.status) ? "ai_unavailable" : "ai_failed",
+    providerDiagnostic(response, await response.clone().json().catch(() => ({}))));
+  let data: ResponseData;
+  try { data = await response.json() as ResponseData; }
+  catch { throw new AiServiceError("ai_failed", { ...providerDiagnostic(response), reason: "invalid_json" }); }
+  return extractResponse(data, providerDiagnostic(response));
 }
 
 const MEDIA_EXT: Record<string, string> = {
@@ -87,11 +93,11 @@ export async function transcribeWithOpenAI(media: { mime: string; bytes: Uint8Ar
   const model = process.env.OPENAI_TRANSCRIBE_MODEL?.trim();
   const ext = MEDIA_EXT[media.mime];
   if (!hasOpenAIKeys() || !model || !ext || media.bytes.length > 6_000_000) return null;
-  const response = await withOpenAIKey((key, signal) => {
+  const response = await withOpenAIKey((key, signal, requestId) => {
     const body = new FormData();
     body.set("model", model); body.set("response_format", "json");
     body.set("file", new Blob([new Uint8Array(media.bytes)], { type: media.mime }), `speech.${ext}`);
-    return fetch("https://api.openai.com/v1/audio/transcriptions", { method: "POST", headers: { Authorization: `Bearer ${key}` }, body, signal });
+    return fetch("https://api.openai.com/v1/audio/transcriptions", { method: "POST", headers: { Authorization: `Bearer ${key}`, "X-Client-Request-Id": requestId }, body, signal });
   }, deadline);
   if (!response.ok) return null;
   const data = await response.json() as { text?: unknown };

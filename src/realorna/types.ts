@@ -96,6 +96,9 @@ export type FactErrCode =
   | "video_plan"
   | "unreadable"
   | "rate"
+  | "ai_busy"
+  | "ai_quota"
+  | "ai_timeout"
   | "ai_unavailable"
   | "ai_failed";
 

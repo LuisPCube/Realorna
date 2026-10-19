@@ -1,7 +1,10 @@
 import type { Lang } from "./types";
 
 const en = {
-  published_at: "Published", scan_note: "We are reading the content and comparing evidence. This can take up to two minutes; keep this page open.",
+  published_at: "Published", scan_note: "A check can take up to two minutes, including any wait for AI capacity. Keep this page open; the result appears when verification finishes.",
+  scan_pending: "Checking the article and supporting evidence…",
+  scan_pending_video: "Checking readable content, speech and supporting evidence…",
+  scan_elapsed: "Time elapsed: {seconds}s", support_reference: "Support reference",
   ex_real: "Real", ex_nah: "Nah · wrong number", ex_correction: "Real · small correction",
   example_hint: "Free illustrations. No payment or check attempt used.",
   example_title: "Illustrative example",
@@ -173,13 +176,22 @@ const en = {
   fail_ai_title: "The check could not be finished",
   fail_ai_body: "The reviewer did not return a usable result. Nothing was invented. Try again in a moment.",
   fail_rate_title: "Please wait before retrying",
-  fail_rate_body: "The AI service is busy or its quota has been reached. Your check is saved. Retry after the countdown without another attempt.",
+  fail_rate_body: "A request or token limit requires a pause. Retry this saved check after the countdown without another payment.",
+  fail_busy_title: "Waiting for AI capacity",
+  fail_busy_body: "A check is already running, or the service is briefly paused after a connection or server error. Retry this saved check after the countdown without another payment.",
+  fail_quota_title: "The AI service needs an admin check",
+  fail_quota_body: "The provider reported a credit or usage limit. An admin needs to check the AI account. Your check is saved; another customer payment will not fix this. Retry the saved check once the service is restored.",
+  fail_timeout_title: "The AI request took too long",
+  fail_timeout_body: "The request reached its time limit before a result arrived. Your check is saved. Retry the same check without another payment.",
   fail_off_title: "Review is unavailable",
   fail_off_body: "The fact-check service is not available in this session. Link text was not guessed.",
 };
 
 const id: Record<keyof typeof en, string> = {
-  published_at: "Terbit", scan_note: "Kami membaca isi dan membandingkan buktinya. Proses bisa memerlukan hingga dua menit; biarkan halaman tetap terbuka.",
+  published_at: "Terbit", scan_note: "Pemeriksaan bisa memerlukan hingga dua menit, termasuk waktu menunggu giliran AI. Biarkan halaman terbuka; hasil muncul setelah verifikasi selesai.",
+  scan_pending: "Memeriksa artikel dan bukti pendukung…",
+  scan_pending_video: "Memeriksa konten yang terbaca, ucapan, dan bukti pendukung…",
+  scan_elapsed: "Waktu berjalan: {seconds} dtk", support_reference: "Referensi bantuan",
   ex_real: "Real", ex_nah: "Nah · angka salah", ex_correction: "Real · koreksi kecil",
   example_hint: "Ilustrasi gratis. Tidak memakai pembayaran atau kesempatan cek.",
   example_title: "Contoh ilustratif",
@@ -351,7 +363,13 @@ const id: Record<keyof typeof en, string> = {
   fail_ai_title: "Pemeriksaan tidak selesai",
   fail_ai_body: "Peninjau tidak mengembalikan hasil yang bisa dipakai. Tidak ada yang dikarang. Coba lagi sebentar.",
   fail_rate_title: "Tunggu sebelum mencoba lagi",
-  fail_rate_body: "Layanan AI sibuk atau kuotanya tercapai. Pemeriksaanmu tersimpan. Coba ulang setelah hitungan mundur tanpa kesempatan tambahan.",
+  fail_rate_body: "Batas permintaan atau token memerlukan jeda. Coba ulang pemeriksaan tersimpan ini setelah hitungan mundur tanpa membayar lagi.",
+  fail_busy_title: "Menunggu giliran layanan AI",
+  fail_busy_body: "Ada pemeriksaan yang masih berjalan, atau layanan sedang dijeda setelah gangguan koneksi atau server. Coba ulang pemeriksaan tersimpan ini setelah hitungan mundur tanpa membayar lagi.",
+  fail_quota_title: "Layanan AI perlu diperiksa admin",
+  fail_quota_body: "Penyedia AI melaporkan batas saldo atau penggunaan. Admin perlu memeriksa akun AI. Pemeriksaanmu tersimpan; membayar lagi tidak memperbaiki masalah ini. Coba ulang pemeriksaan tersimpan setelah layanan pulih.",
+  fail_timeout_title: "Permintaan AI melewati batas waktu",
+  fail_timeout_body: "Batas waktu tercapai sebelum hasil diterima. Pemeriksaanmu tersimpan. Coba ulang pemeriksaan yang sama tanpa membayar lagi.",
   fail_off_title: "Peninjauan tidak tersedia",
   fail_off_body: "Layanan pemeriksaan tidak tersedia di sesi ini. Isi tautan tidak ditebak.",
 };

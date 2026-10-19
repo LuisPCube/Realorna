@@ -1,9 +1,10 @@
 import { randomUUID, createHash } from "node:crypto";
 import { getSql } from "@/lib/db";
 import { AiRateLimitError, aiRateSettings, type RateReason } from "./ai-rate-policy";
+import { AiServiceError } from "./ai-errors";
 
 const SCOPE = "openai";
-const REQUEST_TIMEOUT_MS = 45_000;
+const REQUEST_TIMEOUT_MS = 90_000;
 export { REQUEST_TIMEOUT_MS };
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 export type AiLease = { id: string; failures: number };
@@ -14,14 +15,14 @@ export async function acquireAiSlot(deadline: number): Promise<AiLease> {
   const queueDeadline = Math.min(deadline - 500, Date.now() + settings.maxQueueMs);
   await sql`insert into fact_ai_throttle (scope) values (${SCOPE}) on conflict (scope) do nothing`;
   while (true) {
-    if (deadline - Date.now() < 500) throw new AiRateLimitError(1, "busy");
+    if (deadline - Date.now() < 500) throw new AiServiceError("ai_timeout", { origin: "deadline" });
     const id = randomUUID();
     const rows = await sql.query<{ failure_count: number }>(`update fact_ai_throttle
-      set lease_id = $2, lease_until = clock_timestamp() + interval '90 seconds',
+      set lease_id = $2, lease_until = clock_timestamp() + ($4::int * interval '1 millisecond'),
           next_request_at = clock_timestamp() + ($3::int * interval '1 millisecond')
       where scope = $1 and next_request_at <= clock_timestamp() and blocked_until <= clock_timestamp()
         and (lease_until is null or lease_until <= clock_timestamp())
-      returning failure_count`, [SCOPE, id, settings.intervalMs]);
+      returning failure_count`, [SCOPE, id, settings.intervalMs, Math.min(REQUEST_TIMEOUT_MS, Math.max(1, deadline - Date.now())) + 10_000]);
     if (rows[0]) return { id, failures: Number(rows[0].failure_count) };
     const [state] = await sql.query<{ wait_ms: string | number; busy_ms: string | number; cooldown_ms: string | number; block_reason: RateReason }>(`select
       greatest(0, ceil(extract(epoch from (greatest(next_request_at, blocked_until) - clock_timestamp())) * 1000)) as wait_ms,
@@ -30,12 +31,19 @@ export async function acquireAiSlot(deadline: number): Promise<AiLease> {
       block_reason from fact_ai_throttle where scope = $1`, [SCOPE]);
     const waitMs = Number(state?.wait_ms ?? 1000);
     const busyMs = Number(state?.busy_ms ?? 0);
-    const reason = Number(state?.cooldown_ms ?? 0) > 0 ? state.block_reason : waitMs > 0 ? "rate" : "busy";
+    const cooldown = Number(state?.cooldown_ms ?? 0) > 0;
+    const reason = cooldown ? state.block_reason : busyMs > 0 ? "busy" : waitMs > 0 ? "rate" : "busy";
     const remaining = queueDeadline - Date.now();
     if (remaining <= 0 || waitMs > remaining) {
-      throw new AiRateLimitError(Math.max(waitMs, busyMs, 1000) / 1000, reason);
+      // A lease expiry is a crash-recovery ceiling, not a provider Retry-After.
+      // Check capacity again shortly; never bypass an actual shared cooldown.
+      const retryMs = cooldown ? Math.max(waitMs, 1000)
+        : Math.max(waitMs, Math.min(busyMs || 1000, 3000));
+      throw new AiRateLimitError(retryMs / 1000, reason,
+        { origin: cooldown ? "app_cooldown" : busyMs > 0 ? "app_queue" : "app_pacing",
+          reason: cooldown ? "shared_delay" : busyMs > 0 ? "lease_occupied" : "minimum_spacing" });
     }
-    await sleep(Math.min(1000, remaining, Math.max(100, waitMs)));
+    await sleep(Math.min(1000, remaining, Math.max(100, waitMs, busyMs > 0 ? 1000 : 0)));
   }
 }
 

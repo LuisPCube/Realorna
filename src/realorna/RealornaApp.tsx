@@ -33,9 +33,9 @@ type Recent = {
 
 type Phase =
   | { type: "idle" }
-  | { type: "scan"; host: string; video: boolean; step: number }
+  | { type: "scan"; host: string; video: boolean }
   | { type: "report"; result: FactOk }
-  | { type: "fail"; code: FactErrCode };
+  | { type: "fail"; code: FactErrCode; supportId?: string };
 
 const NEWS_CHIPS = ["BBC", "Kompas", "Detik", "CNN Indonesia", "Reuters"];
 const VIDEO_CHIPS = ["YouTube", "TikTok", "Instagram"];
@@ -100,6 +100,9 @@ function failCode(error: unknown): FactErrCode {
     error === "video_plan" ||
     error === "invalid" ||
     error === "rate" ||
+    error === "ai_busy" ||
+    error === "ai_quota" ||
+    error === "ai_timeout" ||
     error === "ai_unavailable" ||
     error === "ai_failed"
   ) {
@@ -138,10 +141,11 @@ export function RealornaApp() {
   const t = (key: CopyKey, params?: Record<string, string | number>) => translate(lang, key, params);
 
   useEffect(() => {
+    if (account.loading) return;
     const pending = account.orders.reduce((latest, order) => Math.max(latest,
       order.retry_after_at ? new Date(order.retry_after_at).getTime() || 0 : 0), 0);
-    if (pending > Date.now()) setRetryUntil(current => Math.max(current, pending));
-  }, [account.orders]);
+    setRetryUntil(pending > Date.now() ? pending : 0);
+  }, [account.orders, account.loading]);
 
   useEffect(() => {
     const update = () => setRetrySeconds(Math.max(0, Math.ceil((retryUntil - Date.now()) / 1000)));
@@ -152,7 +156,7 @@ export function RealornaApp() {
   }, [retryUntil]);
 
   function rememberCooldown(error: unknown) {
-    if (error instanceof RequestError && error.code === "rate" && error.retryAfterSeconds > 0) {
+    if (error instanceof RequestError && ["rate", "ai_busy"].includes(error.code) && error.retryAfterSeconds > 0) {
       setRetryUntil(current => Math.max(current, Date.now() + error.retryAfterSeconds * 1000));
     }
   }
@@ -194,12 +198,6 @@ export function RealornaApp() {
     if (found) { setSelectedAttempt(found); setPlan(found.plan); inputRef.current?.focus(); }
     else ping(say(lang, "This attempt is unavailable or belongs to another account.", "Kesempatan ini tidak tersedia atau milik akun lain."));
   }, [account.user?.id, account.loading, account.attempts, lang]);
-
-  useEffect(() => {
-    if (!working) return;
-    const timer = setInterval(() => setPhase(p => p.type === "scan" ? { ...p, step: Math.min(p.video ? 3 : 2, p.step + 1) } : p), 1800);
-    return () => clearInterval(timer);
-  }, [working]);
 
   useEffect(() => {
     if (!toastOn) return;
@@ -302,7 +300,7 @@ export function RealornaApp() {
     setWorking(true); setPayOpen(false);
     const link = parseLink(url);
     const looked = link ? inspectLink(link) : null;
-    setPhase({ type: "scan", host: looked?.host || "", video: looked?.video || false, step: 0 });
+    setPhase({ type: "scan", host: looked?.host || "", video: looked?.video || false });
     const identity = JSON.stringify({ url: url.trim(), plan, lang, attemptId });
     if (!checkRequest.current || checkRequest.current.identity !== identity) checkRequest.current = { identity, key: crypto.randomUUID(), url: url.trim(), plan, lang, attemptId };
     try {
@@ -317,7 +315,7 @@ export function RealornaApp() {
       if (e instanceof RequestError && e.code === "attempt_required") {
         checkRequest.current = null; setSelectedAttempt(null); setPhase({ type: "idle" }); setResumeOrderId(undefined); setPayOpen(true);
       } else {
-        setPhase({ type: "fail", code: failCode(e instanceof RequestError ? e.code : "ai_failed") });
+        setPhase({ type: "fail", code: failCode(e instanceof RequestError ? e.code : "ai_failed"), supportId: e instanceof RequestError ? e.supportId : undefined });
         ping(errorMessage(e,lang));
       }
     } finally { setWorking(false); await account.refresh(); }
@@ -328,13 +326,13 @@ export function RealornaApp() {
     if (order.retry_after_at && new Date(order.retry_after_at).getTime() > Date.now()) return;
     setPlan(order.plan); setUrl(order.url);
     if (order.payment_method === "transfer") { setResumeOrderId(order.order_id); setPayOpen(true); return; }
-    setWorking(true); setPhase({ type: "scan", host: parseLink(order.url)?.hostname || "", video: order.plan === "advance", step: 0 });
+    setWorking(true); setPhase({ type: "scan", host: parseLink(order.url)?.hostname || "", video: order.plan === "advance" });
     try {
       if (order.status === "processed") {
         const stored = await apiRequest<{ report: FactOk }>(`/api/orders/${encodeURIComponent(order.order_id)}`);
         showReport(stored.report);
       } else await analyzeOrder(order.order_id);
-    } catch (e) { rememberCooldown(e); setPhase({ type: "fail", code: failCode(e instanceof RequestError ? e.code : "ai_failed") }); ping(errorMessage(e,lang)); }
+    } catch (e) { rememberCooldown(e); setPhase({ type: "fail", code: failCode(e instanceof RequestError ? e.code : "ai_failed"), supportId: e instanceof RequestError ? e.supportId : undefined }); ping(errorMessage(e,lang)); }
     finally { setWorking(false); await account.refresh(); }
   }
 
@@ -579,8 +577,8 @@ export function RealornaApp() {
           </section>
 
           <div id="result" ref={resultRef} aria-live="polite">
-            {phase.type === "scan" ? <Scan host={phase.host} video={phase.video} step={phase.step} t={t} /> : null}
-            {phase.type === "fail" ? <Fail code={phase.code} t={t} /> : null}
+            {phase.type === "scan" ? <Scan host={phase.host} video={phase.video} t={t} /> : null}
+            {phase.type === "fail" ? <Fail code={phase.code} supportId={phase.supportId} t={t} /> : null}
             {phase.type === "report" ? (
               <Report
                 result={phase.result}
@@ -734,51 +732,51 @@ function ago(ts: number, lang: Lang, t: (k: CopyKey, p?: Record<string, string |
   return rtf.format(-Math.round(s / 86400), "day");
 }
 
-function Scan({
+export function Scan({
   host,
   video,
-  step,
   t,
 }: {
   host: string;
   video: boolean;
-  step: number;
   t: (k: CopyKey, p?: Record<string, string | number>) => string;
 }) {
-  const steps: CopyKey[] = video
-    ? ["step_read", "step_scan", "step_transcribe", "step_claims", "step_write"]
-    : ["step_read", "step_scan", "step_match", "step_write"];
+  const [seconds, setSeconds] = useState(0);
+  useEffect(() => {
+    const started = Date.now();
+    const timer = window.setInterval(() => setSeconds(Math.floor((Date.now() - started) / 1000)), 1000);
+    return () => clearInterval(timer);
+  }, []);
   return (
     <div className="panel" role="status">
       <p className="scan-head">{t("scan_title", { host })}</p>
       <p className="note">{t("scan_note")}</p>
-      <ol className="steps">
-        {steps.map((key, i) => (
-          <li key={key} className={i < step ? "done" : i === step ? "active" : ""}>
-            <span className="dot">{i < step ? <Check size={12} strokeWidth={3} /> : null}</span>
-            {t(key)}
-          </li>
-        ))}
-      </ol>
+      <ul className="steps" aria-busy="true">
+        <li className="active"><span className="dot" aria-hidden="true" />{t(video ? "scan_pending_video" : "scan_pending")}</li>
+      </ul>
+      <p className="note">{t("scan_elapsed", { seconds })}</p>
     </div>
   );
 }
 
-function Fail({
+export function Fail({
   code,
+  supportId,
   t,
 }: {
   code: FactErrCode;
+  supportId?: string;
   t: (k: CopyKey) => string;
 }) {
   const title: CopyKey =
-    code === "rate" ? "fail_rate_title" : code === "ai_unavailable" ? "fail_off_title" : code === "unreadable" ? "fail_title" : "fail_ai_title";
+    code === "ai_busy" ? "fail_busy_title" : code === "ai_quota" ? "fail_quota_title" : code === "ai_timeout" ? "fail_timeout_title" : code === "rate" ? "fail_rate_title" : code === "ai_unavailable" ? "fail_off_title" : code === "unreadable" ? "fail_title" : "fail_ai_title";
   const body: CopyKey =
-    code === "rate" ? "fail_rate_body" : code === "ai_unavailable" ? "fail_off_body" : code === "unreadable" ? "fail_body" : "fail_ai_body";
+    code === "ai_busy" ? "fail_busy_body" : code === "ai_quota" ? "fail_quota_body" : code === "ai_timeout" ? "fail_timeout_body" : code === "rate" ? "fail_rate_body" : code === "ai_unavailable" ? "fail_off_body" : code === "unreadable" ? "fail_body" : "fail_ai_body";
   return (
     <div className="panel alert" role="alert">
       <h3>{t(title)}</h3>
       <p>{t(body)}</p>
+      {supportId ? <p className="note">{t("support_reference")}: <code>{supportId}</code></p> : null}
     </div>
   );
 }

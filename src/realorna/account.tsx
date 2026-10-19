@@ -4,7 +4,7 @@ import type { AccountState } from "./account-types";
 import type { Lang } from "./types";
 export function say(lang: Lang, en: string, id: string) { return lang === "id" ? id : en; }
 export class RequestError extends Error {
-  constructor(public code: string, public status: number, public retryAfterSeconds = 0, public retryReason = "rate") { super(code); }
+  constructor(public code: string, public status: number, public retryAfterSeconds = 0, public retryReason = "rate", public supportId?: string) { super(code); }
 }
 export async function apiRequest<T>(path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = {};
@@ -17,7 +17,8 @@ export async function apiRequest<T>(path: string, body?: unknown): Promise<T> {
   if (!res.ok) {
     const seconds = Number(data.retry_after_seconds ?? res.headers.get("Retry-After") ?? 0);
     throw new RequestError(data.error || data.code || "server_error", res.status,
-      Number.isFinite(seconds) ? Math.max(0, Math.ceil(seconds)) : 0, String(data.retry_reason || "rate"));
+      Number.isFinite(seconds) ? Math.max(0, Math.ceil(seconds)) : 0, String(data.retry_reason || "rate"),
+      typeof data.support_id === "string" && /^[a-f0-9-]{36}$/i.test(data.support_id) ? data.support_id : undefined);
   }
   return data as T;
 }
@@ -39,6 +40,9 @@ export function errorMessage(error: unknown, lang: Lang) {
     attempt_required: ["No unused attempt is available for this plan.", "Tidak ada kesempatan tersisa untuk paket ini."],
     request_conflict: ["This request was already used with different details. Refresh and try again.", "Permintaan ini sudah dipakai dengan detail berbeda. Muat ulang dan coba lagi."],
     rate: ["The AI service needs a pause. Wait for the countdown, then retry this saved check without another attempt.", "Layanan AI perlu jeda. Tunggu hitungan mundur, lalu ulangi pemeriksaan tersimpan ini tanpa kesempatan tambahan."],
+    ai_busy: ["The check is waiting for AI capacity. Retry the saved check after the countdown; no extra attempt is needed.", "Pemeriksaan menunggu giliran layanan AI. Coba ulang pemeriksaan tersimpan setelah hitungan mundur; tidak perlu kesempatan tambahan."],
+    ai_quota: ["The AI service needs an admin to check its credits or spending limits. Your check is saved; another payment will not fix this.", "Admin perlu memeriksa saldo atau batas penggunaan layanan AI. Pemeriksaanmu tersimpan; membayar lagi tidak memperbaiki masalah ini."],
+    ai_timeout: ["The AI request took too long. Retry this saved check without another payment.", "Permintaan AI melewati batas waktu. Coba ulang pemeriksaan tersimpan ini tanpa membayar lagi."],
     ai_unavailable: ["The AI service is not configured or its keys are unavailable. Your attempt stays with this check for retry.", "Layanan AI belum diatur atau key tidak tersedia. Kesempatanmu tetap terikat pada pemeriksaan ini untuk dicoba ulang."],
   };
   const item = messages[code];

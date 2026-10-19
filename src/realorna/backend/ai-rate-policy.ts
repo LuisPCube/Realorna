@@ -1,7 +1,7 @@
 export type RateReason = "rate" | "quota" | "busy";
 
 export class AiRateLimitError extends Error {
-  constructor(public retryAfterSeconds: number, public reason: RateReason = "rate") {
+  constructor(public retryAfterSeconds: number, public reason: RateReason = "rate", public diagnostic: AiDiagnostic = { origin: "app_cooldown" }) {
     super("ai_quota");
     this.name = "AiRateLimitError";
     this.retryAfterSeconds = Math.max(1, Math.ceil(retryAfterSeconds));
@@ -18,7 +18,7 @@ export function aiRateSettings() {
   return {
     intervalMs: integerSetting("OPENAI_MIN_INTERVAL_MS", 12_000, 1000, 300_000),
     maxAttempts: integerSetting("OPENAI_MAX_ATTEMPTS", 3, 1, 5),
-    maxQueueMs: integerSetting("OPENAI_MAX_QUEUE_WAIT_MS", 15_000, 0, 30_000),
+    maxQueueMs: integerSetting("OPENAI_MAX_QUEUE_WAIT_MS", 30_000, 0, 60_000),
     retryBaseMs: integerSetting("OPENAI_RETRY_BASE_MS", 2000, 250, 30_000),
   };
 }
@@ -57,7 +57,9 @@ export function providerRetryInfo(response: Response, data: unknown, now = Date.
   }
   const error = (data as { error?: { code?: string; type?: string } } | null)?.error;
   const code = String(error?.code ?? error?.type ?? "");
-  const quotaExhausted = /^(insufficient_quota|credit_balance_exhausted|billing_hard_limit_reached|organization_spend_limit_exceeded|project_spend_limit_exceeded|organization_usage_limit_exceeded)$/.test(code);
+  const quotaExhausted = error?.type === "insufficient_quota" || /^(insufficient_quota|credit_balance_exhausted|billing_hard_limit_reached|organization_spend_limit_exceeded|project_spend_limit_exceeded|organization_usage_limit_exceeded|usage_limit_exceeded)$/.test(code);
   const invalidKey = code === "invalid_api_key";
   return { delayMs: delays.length ? Math.max(...delays) : undefined, quotaExhausted, invalidKey };
 }
+import type { AiDiagnostic } from "./ai-errors";
+

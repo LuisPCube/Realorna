@@ -22,7 +22,7 @@ try {
   const pages = await server.ssrLoadModule("/src/realorna/engine.server.ts");
   const { exampleReport } = await server.ssrLoadModule("/src/realorna/examples.ts");
   const { reportText, resultLabel } = await server.ssrLoadModule("/src/realorna/report-text.ts");
-  const { Report } = await server.ssrLoadModule("/src/realorna/RealornaApp.tsx");
+  const { Report, Scan, Fail } = await server.ssrLoadModule("/src/realorna/RealornaApp.tsx");
   const { translate } = await server.ssrLoadModule("/src/realorna/i18n.ts");
   const sourceUrl = "https://www.cnnindonesia.com/ekonomi/20200102/fixture";
   const evidence = "https://www.idx.co.id/id/data-pasar/fixture-20200102";
@@ -165,6 +165,20 @@ try {
     const html = renderToStaticMarkup(React.createElement(Report, { result, lang: "id", titleRef: { current: null }, t: (key, params) => translate("id", key, params), onAgain() {}, onCopy() {}, onShare() {}, onPdf() {} }));
     assert.match(html, /claim-evidence/); assert.match(html, /idx\.co\.id/); assert.match(html, /Konteks waktu/);
     assert.match(reportText(result, "id"), /Bukti: https:/);
+  });
+  await test("Pending UI has no fabricated completed stages, and distinct failures keep saved-check guidance", () => {
+    for (const lang of ["id", "en"]) {
+      const t = (key, params) => translate(lang, key, params);
+      const pending = renderToStaticMarkup(React.createElement(Scan, { host: "kompas.com", video: false, t }));
+      assert.match(pending, /aria-busy="true"/); assert.match(pending, /Time elapsed: 0s|Waktu berjalan: 0 dtk/);
+      assert.doesNotMatch(pending, /class="done"|Comparing with other reporting|Membandingkan dengan/);
+      const busy = renderToStaticMarkup(React.createElement(Fail, { code: "ai_busy", t, supportId: "fixture-support" }));
+      const quota = renderToStaticMarkup(React.createElement(Fail, { code: "ai_quota", t }));
+      const timeout = renderToStaticMarkup(React.createElement(Fail, { code: "ai_timeout", t }));
+      assert.match(busy, /AI capacity|giliran layanan AI/); assert.match(busy, /fixture-support/);
+      assert.match(quota, /admin|Admin/); assert.doesNotMatch(quota, /countdown|hitungan mundur/);
+      assert.match(timeout, /took too long|batas waktu/);
+    }
   });
   // Export the same Report component for a self-contained reviewable HTML demo.
   if (process.env.REALORNA_EXPORT_DEMO) {

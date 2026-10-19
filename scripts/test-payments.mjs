@@ -96,6 +96,19 @@ try {
     await orders.markFailed(claimed.order_id,"ai_failed",retry.claim_token);
     assert.equal((await request("/api/account",undefined,alex)).data.attempts.length,0);
   });
+  await test("Busy saved checks preserve their reason, HTTP status, and the original consumed attempt", async () => {
+    const claimed = await orders.claimRetry(checkedOrder.order_id); assert.ok(claimed);
+    await orders.markFailed(claimed.order_id, "ai_busy", claimed.claim_token, 36);
+    const response = await request("/api/analyze", { order_id: claimed.order_id }, alex);
+    assert.equal(response.status, 503); assert.equal(response.data.error, "ai_busy");
+    assert.equal(response.data.retry_reason, "busy"); assert.equal(response.data.error_origin, "saved_check");
+    assert.ok(Number(response.retryAfter) > 0); assert.ok(response.data.support_id);
+    const repeat = await request("/api/analyze", { order_id: claimed.order_id }, alex); assert.equal(repeat.status, 503);
+    assert.equal((await request("/api/account", undefined, alex)).data.attempts.length, 0);
+    const [count] = await sql.query(`select count(*) as count from fact_orders where credit_attempt_id = $1`, [grant.attempt_id]);
+    assert.equal(count.count, 1);
+    await sql.query(`update fact_orders set retry_after_at = null where order_id = $1`, [claimed.order_id]);
+  });
   await test("Transfers use server prices; submitting does not credit the user", async () => {
     const response = await request("/api/create-payment",{...input,amount:1,request_key:randomUUID()},alex);
     assert.equal(response.status,200,JSON.stringify(response.data)); invoice=response.data; assert.equal(invoice.status,"pending"); assert.equal(invoice.amount,3000);

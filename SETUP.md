@@ -1,8 +1,8 @@
-# Realorna: accounts, bank transfers, and admin attempts
+# Realorna: OpenAI, Real / Nah, accounts and transfers
 
-This update replaces the active Midtrans checkout with manual bank transfers, adds username/password accounts, and lets admins send one Regular or Advance attempt to a registered username. The existing checker design is retained.
+The checker uses OpenAI web evidence to verify individual claims and returns Real / Nah with corrections. Existing username accounts, bank transfers, and admin-granted Regular/Advance attempts are retained.
 
-The code has not been connected to your existing live Vercel database. Your database URL, bank details, Gemini keys, and site URL are not available in the supplied ZIP. Configure them below before deploying.
+The code has not been connected to your existing live Vercel database. Your database URL, bank details, OpenAI keys, and site URL are not available in the supplied ZIP. Configure them below before deploying.
 
 ## 1. Configure Vercel
 
@@ -25,8 +25,8 @@ Use your existing Vercel project. If importing the extracted project into a new 
 | `TRANSFER_ACCOUNT_NUMBER` | Your actual receiving account number, as text. |
 | `TRANSFER_ACCOUNT_HOLDER` | The actual account holder name. |
 | `TRANSFER_NOTE` | Optional additional instructions displayed to customers. |
-| `GEMINI_MODEL` | An exact model ID currently available to your project in Google AI Studio. The code deliberately has no implicit model or paid model fallback. |
-| `GEMINI_API_KEYS` | Your authorized Gemini keys, in priority order, separated by commas. See section 5. |
+| `OPENAI_MODEL` | Exact Responses API model ID with web search and Structured Outputs access. No implicit model fallback. Example: `gpt-4.1-mini` if enabled for your project. |
+| `OPENAI_API_KEY` | Your server-side OpenAI key. For multiple authorized keys, see section 5. |
 
 `VITE_AUTH_ENABLED` is already `true` in `.grok/app-env.json`. Do not override it with `false`.
 
@@ -72,43 +72,64 @@ The old demo payment endpoint and Midtrans webhook return HTTP 410. They cannot 
 
 An AI check uses an attempt once. If analysis fails, retry that same saved check from the account's **Payments & recent checks → Resume / retry** control. Repeating Check with the unchanged input in the same browser session also reuses the saved check. The consumed attempt stays attached to its original URL and plan; a failed AI request does not require another payment for that check.
 
-## 5. Where to put your API keys
+## 5. OpenAI configuration and evidence checks
 
-For **Vercel**, enter keys in **Project → Settings → Environment Variables**. Do not paste them into a `.tsx` file.
-
-For **local development**, the npm scripts read a private **`.env.local`** in the project root, beside `package.json`. This file is gitignored and intentionally not supplied. The same server variable names apply locally.
-
-Example values (replace the placeholders):
+In **Vercel → Project → Settings → Environment Variables**, add:
 
 ```text
-GEMINI_API_KEYS=your-first-key,your-second-key,your-third-key
-GEMINI_MODEL=model-id-available-in-your-project
+OPENAI_API_KEY=your-openai-api-key
+OPENAI_MODEL=gpt-4.1-mini
+OPENAI_TRANSCRIBE_MODEL=gpt-transcribe
 ```
 
-In Vercel's value field, paste only `your-first-key,your-second-key,your-third-key`, without the variable name or surrounding quotes. A JSON array or newline-separated list is also accepted. `GEMINI_API_KEY` remains supported for a single key and is appended after the list when both are set. Duplicate keys are removed; at most 12 distinct keys are used.
+These are illustrative configuration values, not supplied credentials. Choose an exact model enabled for your OpenAI project that supports **Responses API + web_search + Structured Outputs**. The server requires `OPENAI_MODEL` and never silently substitutes a different model. `gpt-4.1-mini` is an example supported in OpenAI's web-search documentation; model access and limits depend on your project. `OPENAI_TRANSCRIBE_MODEL` enables transcription of directly downloadable audio/MP4 files; it is optional for articles and YouTube public captions. Use a transcription model available to your project, such as the documented `gpt-transcribe`.
 
-The reader and ordered failover implementation are in **`src/realorna/backend/key-pool.ts`**. Actual Gemini requests are in **`src/realorna/backend/gemini.ts`**. These are server modules; the keys stay out of the browser bundle.
+Select the Production environment (and Preview if used), save, then redeploy the complete project. Gemini and xAI credentials are no longer used. Do not put keys in HTML, React files, `VITE_` variables, or public assets. Local npm scripts read private `.env.local`; no key file is bundled.
 
-Gemini calls now pass through a **Postgres-backed request gate** shared by Vercel instances. By default, only one outbound Gemini call runs at a time, with at least 12 seconds between call starts. This covers both video transcription and fact checking. Authentication failures can select the next authorized key, with the same pacing. HTTP 429 does **not** immediately switch to another key: keys in the same project may share the exhausted quota.
+`OPENAI_API_KEYS` optionally accepts an ordered comma/newline-separated list or JSON array; `OPENAI_API_KEY` is appended if both exist. Duplicates are removed; at most 12 authorized keys are accepted. All keys share one conservative database gate. Authentication rejection can select the next key; 429 does not immediately hop keys.
 
-Transient failures use bounded exponential backoff with positive jitter. Realorna honors both the `Retry-After` header and Google's structured `RetryInfo.retryDelay`. Each provider operation gets at most three attempts by default, within its existing request time budget. A long cooldown is returned to the browser instead of keeping a Vercel request asleep indefinitely. The browser displays a countdown, and the saved check's retry time is also enforced in the database, including after reloads. Recognized daily/zero-quota failures are not automatically retried.
+The new request uses OpenAI Responses with mandatory live web search and strict JSON. There is **no model-memory-only fallback** when search is unavailable. The server accepts claim evidence links only if OpenAI's search output/citation annotations recorded them, removes the checked publisher's domain and generic home/search pages as sole comparison evidence, and marks unsupported claims unverified. This provenance check cannot independently prove that a source actually entails the claim; the model still interprets the evidence.
 
-Optional server environment settings (leave unset to use the defaults):
+The result is derived from the claim statuses:
 
-| Variable | Default | Meaning |
+| Result | Rule |
+| --- | --- |
+| Real | The main claims are supported by comparison evidence. |
+| Real, with correction | The main claims are supported; a minor detail needs a correction or remains unclear. |
+| Nah (Hoax) | A main claim is contradicted by evidence. True and false parts are shown separately. |
+| Not enough evidence | A main claim remains unresolved, no substantive claim is checkable, or only partial content is available. Lack of evidence is not proof of a hoax. |
+
+Claims include ✓ supported, ✕ false, ~ minor correction, or ? unverified, with a short explanation, evidence links, and an evidence-backed correction where available. Publication time and check time are kept separate. Historical values are compared against the article's event date/session. The UI and copied/shared reports do not show a numeric trust score. URL safety is reported separately and cannot decide factual truth.
+
+### Request pacing
+
+The existing `0004_ai_throttle.sql` tables are reused under a new `openai` scope. No accounts, payments, or reports are deleted. Default behavior: one outbound request at a time, plus 12 seconds after a completed operation before the next begins. A request gate holds its lease until the provider body has been read. Transcription and checking share the gate across Vercel instances connected to the same database.
+
+| Optional variable | Default | Purpose |
 | --- | --- | --- |
-| `GEMINI_MIN_INTERVAL_MS` | `12000` | Minimum time between Gemini call starts across this app's database. Increase it if your project's model allows fewer requests per minute. |
-| `GEMINI_MAX_ATTEMPTS` | `3` | Total attempts per provider operation, including the first call; allowed range 1–5. |
-| `GEMINI_MAX_QUEUE_WAIT_MS` | `15000` | Maximum wait for a shared slot within an operation. Longer waits return a retry countdown. Allowed range 0–30000. |
-| `GEMINI_RETRY_BASE_MS` | `2000` | Initial backoff before jitter; subsequent transient failures increase it exponentially. |
+| `OPENAI_MIN_INTERVAL_MS` | `12000` | Minimum spacing; increase for lower project limits. |
+| `OPENAI_MAX_ATTEMPTS` | `3` | Total attempts per operation, including the first (1–5). |
+| `OPENAI_MAX_QUEUE_WAIT_MS` | `15000` | Maximum in-request wait for a slot; longer delays return a countdown. |
+| `OPENAI_RETRY_BASE_MS` | `2000` | Base for bounded exponential backoff with positive jitter. |
 
-The default spacing is a starting point, not a guarantee for every Gemini model or project. Match it to your active AI Studio limits. Pacing does not increase daily or token quotas. A video check may need both a transcription call and a fact-check call; retries and a supported search-compatibility fallback can add calls. Google usage from other applications sharing your project is outside this app's request gate.
+The code honors `Retry-After`, millisecond retry hints, and exhausted OpenAI request/token reset headers. Exhausted balance/spend quota errors stop automatic retries. The saved check retains its attempt and retry time. The browser disables repeated requests during the cooldown, including after reloads. Pacing does not increase token, spending, or account limits; other applications using your OpenAI project are outside this gate.
 
-The gate and credential cooldowns are stored in new tables from `migrations/0004_ai_throttle.sql`; raw API keys are never written there. All configured keys share one conservative request gate. Deploy the whole updated project and let `npm run build` apply this migration before testing. No new service or API key is required for the gate.
+Each article check ordinarily uses one Responses request, with at most six search tool calls. Video may first need one transcription request. Provider retries can add usage; retries after a failed fact check may transcribe media again. Web search, transcription, and model usage can incur OpenAI API charges. A bounded operation has up to 120 seconds overall and 45 seconds per outbound attempt. Nitro's Vercel function configuration requests a 180-second maximum; your deployment plan must permit it.
 
-Google applies Gemini rate limits **per project, not per API key**. Several keys in the same project share its allowance. Failover does not increase that allowance or guarantee additional free usage. Configure only keys your team is authorized to use, within the provider's applicable limits. The code does not create accounts or projects.
+### Readability and video limits
 
-Official Gemini rate-limit reference: https://ai.google.dev/gemini-api/docs/rate-limits
+Articles are extracted from article JSON-LD, `<article>` or `<main>` regions where available, with a plain-page fallback and bounded downloads. A blocked/paywalled/login page is not assumed true. A headline or caption alone cannot stand in for the article or video. Inaccessible content fails without an invented verdict and can be retried using the same saved order.
+
+YouTube uses available public captions. Instagram/TikTok and other pages use directly exposed downloadable media when available (maximum 6 MB); media bytes are submitted to OpenAI's audio transcription endpoint. This is not a universal social-video downloader, does not log in to private posts, and does not send a YouTube page URL as an audio file. Missing captions/media remain unreadable. The current video check covers spoken claims, not unseen on-screen text, deepfake detection, or visual authenticity. Long truncated articles/transcripts remain unverified overall, even if individual readable claims have evidence.
+
+The free examples are explicitly simulated; the IHSG 3,500/4,900 numbers and example closing times are not current market data. Examples never create orders, charge money, call OpenAI, or enter real check history.
+
+Official references:
+- https://developers.openai.com/api/docs/guides/tools-web-search
+- https://developers.openai.com/api/docs/guides/structured-outputs
+- https://developers.openai.com/api/docs/guides/speech-to-text
+- https://developers.openai.com/api/docs/guides/rate-limits
+- https://developers.openai.com/api/docs/guides/error-codes
 
 ## 6. Local use and verification
 
@@ -121,9 +142,10 @@ npm run typecheck
 npm test
 npm run test:payments
 npm run test:ai-rate-limit
+npm run test:factcheck
 npm run build
 ```
 
-The payment and rate-limit integration suites always use isolated in-memory databases and refuse to run with `DATABASE_URL` or `VERCEL` set. They include synthetic Gemini responses; they never verify a real payment or spend real model quota. Run them from an environment without those variables.
+The payment and rate-limit integration suites always use isolated in-memory databases and refuse to run with `DATABASE_URL` or `VERCEL` set. They include synthetic OpenAI responses; they never verify a real payment or spend real model quota. Run them from an environment without those variables.
 
 The key setup, admin bootstrap, and receiving account settings must still be checked on your own deployment. See `VERIFICATION.md` for what was actually tested.

@@ -193,9 +193,9 @@ export function inspectLink(u: URL) {
   if (!risky) add("ok", "clean");
 
   const source: SafetyItem[] = [];
-  if (outlet) source.push({ st: "ok", code: "outlet", params: { name: outlet.name } });
+  if (outlet) source.push({ st: "info", code: "outlet", params: { name: outlet.name } });
   else if (vid) source.push({ st: "info", code: "platform", params: { platform: vid.name } });
-  else source.push({ st: "warn", code: "unknown", params: { host } });
+  else source.push({ st: "info", code: "unknown", params: { host } });
 
   return {
     host,
@@ -229,18 +229,9 @@ export function hash01(str: string) {
   return ((h >>> 0) % 1000) / 1000;
 }
 
-/** Trust seal: high means safer. Model confidence is certainty, not trust. */
-export function trustScore(verdict: string, confidence: number) {
-  const c = Math.max(0, Math.min(100, confidence));
-  if (verdict === "FAKTA") return Math.round(72 + (c / 100) * 26);
-  if (verdict === "HOAKS") return Math.round(8 + ((100 - c) / 100) * 18);
-  if (verdict === "MENYESATKAN") return Math.round(24 + ((100 - c) / 100) * 16);
-  if (verdict === "SEBAGIAN_BENAR") return Math.round(50 + (c / 100) * 16);
-  return Math.round(38 + (c / 100) * 14);
-}
-
+/** Claim truth is separate from URL safety and publisher identity. */
 export function uiVerdict(verdict: string): "good" | "caution" | "bad" {
-  if (verdict === "FAKTA") return "good";
-  if (verdict === "HOAKS") return "bad";
+  if (verdict === "FAKTA" || verdict === "SEBAGIAN_BENAR") return "good";
+  if (verdict === "HOAKS" || verdict === "MENYESATKAN") return "bad";
   return "caution";
 }

@@ -14,7 +14,9 @@ import {
   X,
 } from "lucide-react";
 import { translate, type CopyKey } from "./i18n";
-import { EXAMPLES, PRICES, findIn, inspectLink, parseLink, uiVerdict, VIDEO } from "./safety";
+import { PRICES, findIn, inspectLink, parseLink, uiVerdict, VIDEO } from "./safety";
+import { exampleReport, type ExampleKind } from "./examples";
+import { reportText } from "./report-text";
 import { signOut } from "@/lib/auth/client";
 import { apiRequest, errorMessage, RequestError, say, useAccount } from "./account";
 import { AccountPanel, AdminPanel, TransferDialog } from "./AccountPanels";
@@ -25,7 +27,6 @@ type Recent = {
   url: string;
   host: string;
   verdict: Verdict;
-  score: number;
   ts: number;
   result: FactOk;
 };
@@ -60,31 +61,29 @@ function scallop(cx: number, cy: number, R: number, a: number, N: number) {
 }
 
 const MARK = scallop(20, 20, 17, 1.7, 12);
-const SEAL = scallop(70, 70, 58, 3.2, 14);
-const CIRC = 2 * Math.PI * 44;
 
 function money(n: number) {
   return "Rp " + n.toLocaleString("id-ID");
 }
 
 function adviceKey(v: Verdict): CopyKey {
-  if (v === "FAKTA") return "advice_good";
+  if (v === "FAKTA" || v === "SEBAGIAN_BENAR") return "advice_good";
   if (v === "HOAKS" || v === "MENYESATKAN") return "advice_bad";
   if (v === "BELUM_TERVERIFIKASI") return "advice_unknown";
   return "advice_caution";
 }
 
 function bucketLabel(v: Verdict): CopyKey {
-  const b = uiVerdict(v);
-  if (b === "good") return "verdict_good";
-  if (b === "bad") return "verdict_bad";
+  if (v === "FAKTA" || v === "SEBAGIAN_BENAR") return "verdict_good";
+  if (v === "HOAKS" || v === "MENYESATKAN") return "verdict_bad";
   return "verdict_caution";
 }
 
-function claimPill(status: ClaimStatus): { cls: "ok" | "warn" | "bad"; key: CopyKey } {
-  if (status === "benar") return { cls: "ok", key: "st_true" };
-  if (status === "salah") return { cls: "bad", key: "st_false" };
-  return { cls: "warn", key: "st_unclear" };
+function claimPill(status: ClaimStatus): { cls: "ok" | "warn" | "bad"; key: CopyKey; symbol: string } {
+  if (status === "benar") return { cls: "ok", key: "st_true", symbol: "✓" };
+  if (status === "salah") return { cls: "bad", key: "st_false", symbol: "✕" };
+  if (status === "keliru") return { cls: "warn", key: "st_correction", symbol: "~" };
+  return { cls: "warn", key: "st_unclear", symbol: "?" };
 }
 
 function StatusIcon({ st }: { st: SafetyItem["st"] | "off" }) {
@@ -111,6 +110,7 @@ function failCode(error: unknown): FactErrCode {
 
 export function RealornaApp() {
   const [lang, setLang] = useState<Lang>("id");
+  const [exampleKind, setExampleKind] = useState<ExampleKind>("nah");
   const [plan, setPlan] = useState<Plan>("regular");
   const [url, setUrl] = useState("");
   const [error, setError] = useState<CopyKey | null>(null);
@@ -197,7 +197,7 @@ export function RealornaApp() {
 
   useEffect(() => {
     if (!working) return;
-    const timer = setInterval(() => setPhase(p => p.type === "scan" ? { ...p, step: Math.min(3, p.step + 1) } : p), 1800);
+    const timer = setInterval(() => setPhase(p => p.type === "scan" ? { ...p, step: Math.min(p.video ? 3 : 2, p.step + 1) } : p), 1800);
     return () => clearInterval(timer);
   }, [working]);
 
@@ -215,6 +215,7 @@ export function RealornaApp() {
 
   function chooseLang(next: Lang) {
     setLang(next);
+    if (phase.type === "report" && phase.result.demo) setPhase({ type: "report", result: exampleReport(exampleKind, next) });
     localStorage.setItem("rl:lang", JSON.stringify(next));
   }
 
@@ -244,7 +245,6 @@ export function RealornaApp() {
       url: result.url,
       host: result.host,
       verdict: result.verdict,
-      score: result.score,
       ts: Date.now(),
       result,
     };
@@ -342,7 +342,7 @@ export function RealornaApp() {
     setPayOpen(false);
     setError(null);
     setPhase({ type: "report", result });
-    remember(result);
+    if (!result.demo) remember(result);
     requestAnimationFrame(() => {
       titleRef.current?.focus();
       resultRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -357,17 +357,7 @@ export function RealornaApp() {
   }
 
   async function copyReport(result: FactOk) {
-    const summary = result.summaryKey ? t(result.summaryKey) : result.summary;
-    const lines = [
-      "Realorna",
-      `${t(bucketLabel(result.verdict))} · ${t(("v_" + result.verdict) as CopyKey)} (${result.score}/100)`,
-      result.host,
-      summary,
-      "",
-      `${t("what_to_do")}: ${t(adviceKey(result.verdict))}`,
-      ...result.sources.map((s) => s.url),
-    ];
-    const text = lines.join("\n");
+    const text = reportText(result, lang);
     try {
       await navigator.clipboard.writeText(text);
       ping(t("copied"));
@@ -572,16 +562,12 @@ export function RealornaApp() {
 
             <div className="examples">
               <span>{t("try_example")}</span>
-              <button type="button" className="link-btn" onClick={() => setUrl(EXAMPLES.news)}>
-                {t("ex_news")}
-              </button>
-              <button type="button" className="link-btn" onClick={() => setUrl(EXAMPLES.scam)}>
-                {t("ex_scam")}
-              </button>
-              <button type="button" className="link-btn" onClick={() => setUrl(EXAMPLES.video)}>
-                {t("ex_video")}
-              </button>
+              {(["real", "nah", "correction"] as ExampleKind[]).map(kind => <button key={kind} type="button" className="link-btn" disabled={working || payOpen}
+                onClick={() => { setExampleKind(kind); showReport(exampleReport(kind, lang)); }}>
+                {t(kind === "real" ? "ex_real" : kind === "nah" ? "ex_nah" : "ex_correction")}
+              </button>)}
             </div>
+            <p className="example-note">{t("example_hint")}</p>
 
             <div className="card-foot">
               <span className="quota">
@@ -598,6 +584,7 @@ export function RealornaApp() {
             {phase.type === "report" ? (
               <Report
                 result={phase.result}
+                lang={lang}
                 t={t}
                 titleRef={titleRef}
                 onAgain={() => {
@@ -608,7 +595,7 @@ export function RealornaApp() {
                 onCopy={() => void copyReport(phase.result)}
                 onShare={() => {
                   const r = phase.result;
-                  const text = `Realorna: ${t(bucketLabel(r.verdict))} (${r.score}/100)\n${r.host}`;
+                  const text = reportText(r, lang);
                   window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank", "noopener,noreferrer");
                 }}
                 onPdf={() => {
@@ -651,9 +638,7 @@ export function RealornaApp() {
                           <span className="rec-host">{item.host}</span>
                           <span className="rec-sub">
                             <span className={`rv ${b}`}>{t(bucketLabel(item.verdict))}</span>
-                            <span className="tabular-nums">
-                              {item.score}/100
-                            </span>
+
                           </span>
                         </span>
                         <span className="rec-time">{ago(item.ts, lang, t)}</span>
@@ -766,6 +751,7 @@ function Scan({
   return (
     <div className="panel" role="status">
       <p className="scan-head">{t("scan_title", { host })}</p>
+      <p className="note">{t("scan_note")}</p>
       <ol className="steps">
         {steps.map((key, i) => (
           <li key={key} className={i < step ? "done" : i === step ? "active" : ""}>
@@ -797,8 +783,9 @@ function Fail({
   );
 }
 
-function Report({
+export function Report({
   result,
+  lang,
   t,
   titleRef,
   onAgain,
@@ -807,6 +794,7 @@ function Report({
   onPdf,
 }: {
   result: FactOk;
+  lang: Lang;
   t: (k: CopyKey, p?: Record<string, string | number>) => string;
   titleRef: RefObject<HTMLHeadingElement | null>;
   onAgain: () => void;
@@ -824,8 +812,11 @@ function Report({
         : t("kind_link");
   return (
     <article className="report" data-v={bucket} aria-labelledby="repTitle">
+      {result.demo && <div className="demo-notice" role="note"><strong>{t("example_title")}</strong><p>{t("example_disclaimer")}</p></div>}
+      <p className="report-kicker">{t("content_result")}</p>
+      {result.meta.title && <p className="report-article-title">{result.meta.title}</p>}
       <div className="rep-head">
-        <Seal score={result.score} label={t("score_aria", { n: result.score })} />
+        <span className="verdict-mark" aria-hidden="true">{bucket === "good" ? <Check size={38} strokeWidth={3}/> : bucket === "bad" ? <X size={38} strokeWidth={3}/> : <span>?</span>}</span>
         <div>
           <h2 className="rep-title" id="repTitle" tabIndex={-1} ref={titleRef}>
             {t(bucketLabel(result.verdict))}
@@ -854,7 +845,7 @@ function Report({
         </span>
         {result.mode === "ai" ? (
           <span className="tag">
-            <span className="t">{t(result.engine === "grok" ? "checked_grok" : "checked_gemini")}</span>
+            <span className="t">{t(result.engine === "openai" ? "checked_openai" : "checked_legacy")}</span>
           </span>
         ) : null}
         {result.meta.author ? (
@@ -864,26 +855,26 @@ function Report({
         ) : null}
       </div>
 
-      <SafetyGroup title={t("g_safety")} items={result.safety.filter((i) => !["outlet", "platform", "unknown"].includes(i.code))} t={t} />
-      <SafetyGroup title={t("g_source")} items={result.safety.filter((i) => ["outlet", "platform", "unknown"].includes(i.code))} t={t} />
+      {result.reference_date && <p className="time-context"><strong>{t("time_context")}:</strong> {result.reference_date}</p>}
+      {!result.demo && result.checked_at && <p className="note">{t("checked_at")}: {new Date(result.checked_at).toLocaleString(lang === "id" ? "id-ID" : "en-GB", { timeZone: "Asia/Jakarta" })} WIB</p>}
 
       {result.claims.length > 0 ? (
         <section className="grp">
           <h3>{t("g_claims")}</h3>
           <ul className="sig">
-            {result.claims.map((c) => {
+            {result.claims.map((c, index) => {
               const pill = claimPill(c.status);
               return (
-                <li key={c.text}>
-                  <span className={`ic ${pill.cls}`}>
-                    <StatusIcon st={pill.cls === "ok" ? "ok" : pill.cls === "bad" ? "bad" : "warn"} />
-                  </span>
-                  <div>
-                    <div className="sig-t">{c.text}</div>
-                    <div className="sig-d">
-                      <span className={`pill ${pill.cls}`}>{t(pill.key)}</span>
-                      {c.explanation}
-                    </div>
+                <li key={index} className={`claim-row claim-${c.status}`}>
+                  <span className={`ic ${pill.cls} claim-symbol`} aria-hidden="true">{pill.symbol}</span>
+                  <div className="claim-main">
+                    <div className="claim-heading"><span className="sig-t">{c.status === "salah" ? <s>{c.text}</s> : c.text}</span><span className={`pill ${pill.cls}`}>{t(pill.key)}</span></div>
+                    {c.correction && <p className="claim-correction"><Check size={16} aria-hidden="true"/><span><strong>{t("correction")}:</strong> {c.correction}</span></p>}
+                    <p className="sig-d">{c.explanation}</p>
+                    {Boolean(c.source_urls?.length) && <div className="claim-evidence">{c.source_urls?.map(url => {
+                      const source = result.sources.find(s => s.url === url);
+                      return source ? <a key={url} href={url} target="_blank" rel="noopener noreferrer" aria-label={`${t("evidence")}: ${source.title}`}>[{result.sources.indexOf(source) + 1}] {source.publisher}</a> : null;
+                    })}</div>}
                   </div>
                 </li>
               );
@@ -912,11 +903,11 @@ function Report({
         <section className="grp">
           <h3>{t("g_sources")}</h3>
           <ul className="sig">
-            {result.sources.map((s) => (
+            {result.sources.map((s, index) => (
               <li key={s.url}>
                 <div>
                   <a href={s.url} target="_blank" rel="noopener noreferrer">
-                    {s.title}
+                    [{index + 1}] {s.title}
                   </a>
                   <div className="sig-d">{s.publisher}</div>
                 </div>
@@ -926,12 +917,14 @@ function Report({
         </section>
       ) : null}
 
-      {result.meta.title ? (
-        <p className="note">
-          {result.meta.title}
-          {result.meta.published_at ? ` · ${result.meta.published_at}` : ""}
-        </p>
-      ) : null}
+      {!result.demo && result.safety.length > 0 && <details className="safety-details">
+        <summary>{t("g_safety")}</summary>
+        <p className="note">{t("safety_separate")}</p>
+        <SafetyGroup title={t("g_safety")} items={result.safety.filter(i => !["outlet", "platform", "unknown"].includes(i.code))} t={t}/>
+        <SafetyGroup title={t("g_source")} items={result.safety.filter(i => ["outlet", "platform", "unknown"].includes(i.code))} t={t}/>
+      </details>}
+
+      {result.meta.published_at && <p className="note">{t("published_at")}: {result.meta.published_at}</p>}
 
       <div className="advice">
         <h3>{t("what_to_do")}</h3>
@@ -987,48 +980,6 @@ function SafetyGroup({
   );
 }
 
-function Seal({ score, label }: { score: number; label: string }) {
-  const numRef = useRef<SVGTextElement>(null);
-  const offset = CIRC * (1 - score / 100);
-  useEffect(() => {
-    const node = numRef.current;
-    if (!node) return;
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      node.textContent = String(score);
-      return;
-    }
-    const start = performance.now();
-    let frame = 0;
-    const tick = (now: number) => {
-      const p = Math.min(1, Math.max(0, (now - start - 280) / 800));
-      node.textContent = String(Math.round(score * (1 - Math.pow(1 - p, 3))));
-      if (p < 1) frame = requestAnimationFrame(tick);
-    };
-    node.textContent = "0";
-    frame = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(frame);
-  }, [score]);
-  return (
-    <svg className="seal" viewBox="0 0 140 140" role="img" aria-label={label}>
-      <path className="seal-body" d={SEAL} />
-      <circle className="seal-track" cx="70" cy="70" r="44" />
-      <circle
-        className="seal-arc"
-        cx="70"
-        cy="70"
-        r="44"
-        transform="rotate(-90 70 70)"
-        style={{ ["--c" as string]: CIRC.toFixed(1), ["--to" as string]: offset.toFixed(1) }}
-      />
-      <text className="seal-num" x="70" y="76" textAnchor="middle" ref={numRef}>
-        {score}
-      </text>
-      <text className="seal-lbl" x="70" y="94" textAnchor="middle">
-        /100
-      </text>
-    </svg>
-  );
-}
 
 function PlanCard({
   kind,

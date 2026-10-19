@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 if (process.env.DATABASE_URL?.trim() || process.env.VERCEL) throw new Error("Run rate-limit tests without DATABASE_URL or VERCEL.");
 delete process.env.XAI_API_KEY;
-delete process.env.GEMINI_API_KEY;
-process.env.GEMINI_API_KEYS = "fixture-first,fixture-second";
-process.env.GEMINI_MODEL = "fixture-model";
-process.env.GEMINI_MIN_INTERVAL_MS = "1000";
-process.env.GEMINI_MAX_ATTEMPTS = "3";
-process.env.GEMINI_MAX_QUEUE_WAIT_MS = "2000";
-process.env.GEMINI_RETRY_BASE_MS = "250";
+delete process.env.OPENAI_API_KEY;
+process.env.OPENAI_API_KEYS = "fixture-first,fixture-second";
+process.env.OPENAI_MODEL = "fixture-model";
+process.env.OPENAI_TRANSCRIBE_MODEL = "fixture-transcribe";
+process.env.OPENAI_MIN_INTERVAL_MS = "1000";
+process.env.OPENAI_MAX_ATTEMPTS = "3";
+process.env.OPENAI_MAX_QUEUE_WAIT_MS = "2000";
+process.env.OPENAI_RETRY_BASE_MS = "250";
 const { createServer } = await import("vite");
 const server = await createServer({ server: { host: "127.0.0.1", port: 8092, strictPort: true }, logLevel: "error" });
 await server.listen();
@@ -18,32 +19,34 @@ try {
   assert.equal(dbSource, "pglite");
   const sql = await getSql();
   const pool = await server.ssrLoadModule("/src/realorna/backend/key-pool.ts");
-  const gate = await server.ssrLoadModule("/src/realorna/backend/gemini-throttle.ts");
-  const policy = await server.ssrLoadModule("/src/realorna/backend/gemini-rate-policy.ts");
-  const gemini = await server.ssrLoadModule("/src/realorna/backend/gemini.ts");
+  const gate = await server.ssrLoadModule("/src/realorna/backend/ai-throttle.ts");
+  const policy = await server.ssrLoadModule("/src/realorna/backend/ai-rate-policy.ts");
+  const openai = await server.ssrLoadModule("/src/realorna/backend/openai.ts");
   async function test(name, fn) {
     // This database is isolated by the guard and dbSource assertion above.
     await sql`delete from fact_ai_throttle`;
     await sql`delete from fact_ai_key_cooldowns`;
-    process.env.GEMINI_API_KEYS = "fixture-first,fixture-second";
-    process.env.GEMINI_MAX_QUEUE_WAIT_MS = "2000";
+    process.env.OPENAI_API_KEYS = "fixture-first,fixture-second";
+    process.env.OPENAI_MAX_QUEUE_WAIT_MS = "2000";
     globalThis.fetch = originalFetch;
     await fn(); checks.push(name); console.log("PASS " + name);
   }
-  await test("Retry-After seconds, HTTP dates and Google RetryInfo all set a minimum delay", async () => {
+  await test("Retry-After seconds, HTTP dates and OpenAI reset headers all set a minimum delay", async () => {
     const now = Date.parse("2026-10-18T00:00:00Z");
     assert.equal(policy.providerRetryInfo(new Response("", { headers: { "Retry-After": "4" } }), {}, now).delayMs, 4000);
     assert.equal(policy.providerRetryInfo(new Response("", { headers: { "Retry-After": "Sun, 18 Oct 2026 00:00:09 GMT" } }), {}, now).delayMs, 9000);
-    const data = { error: { details: [{ "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "5.5s" }] } };
-    assert.equal(policy.providerRetryInfo(new Response("", { headers: { "Retry-After": "2" } }), data, now).delayMs, 5500);
+    assert.equal(policy.providerRetryInfo(new Response("", { headers: { "Retry-After": "2", "x-ratelimit-remaining-tokens": "0", "x-ratelimit-reset-tokens": "1m5.5s" } }), {}, now).delayMs, 65_500);
+    assert.equal(policy.providerRetryInfo(new Response("", { headers: { "x-ratelimit-remaining-tokens": "10", "x-ratelimit-reset-tokens": "1h" } }), {}, now).delayMs, undefined);
+    assert.equal(policy.resetDurationMs("2h1m500ms"), 7_260_500);
+    assert.equal(policy.resetDurationMs("nonsense"), undefined);
   });
   await test("Exponential backoff grows, adds positive jitter, and configuration cannot disable pacing accidentally", async () => {
     assert.equal(policy.exponentialDelay(0, 2000, () => 0), 2000);
     assert.equal(policy.exponentialDelay(1, 2000, () => 0), 4000);
     assert.equal(policy.exponentialDelay(2, 2000, () => 1), 10_000);
-    process.env.GEMINI_MIN_INTERVAL_MS = "0";
-    assert.equal(policy.geminiRateSettings().intervalMs, 12_000);
-    process.env.GEMINI_MIN_INTERVAL_MS = "1000";
+    process.env.OPENAI_MIN_INTERVAL_MS = "0";
+    assert.equal(policy.aiRateSettings().intervalMs, 12_000);
+    process.env.OPENAI_MIN_INTERVAL_MS = "1000";
   });
   await test("Concurrent callers share one in-flight request and spaced start times", async () => {
     const times = []; let active = 0; let peak = 0;
@@ -52,53 +55,66 @@ try {
       await new Promise(resolve => setTimeout(resolve, 40)); active--;
       return new Response("{}");
     };
-    await Promise.all([pool.withGeminiKey(call, Date.now() + 5000), pool.withGeminiKey(call, Date.now() + 5000)]);
+    await Promise.all([pool.withOpenAIKey(call, Date.now() + 5000), pool.withOpenAIKey(call, Date.now() + 5000)]);
     assert.equal(peak, 1); assert.equal(times.length, 2); assert.ok(times[1] - times[0] >= 950, JSON.stringify(times));
+  });
+  await test("Slow response bodies keep the lease until completion and delay the next request", async () => {
+    process.env.OPENAI_MAX_QUEUE_WAIT_MS = "4000";
+    let calls = 0; let firstEnded = 0; let secondStarted = 0;
+    const call = async () => {
+      calls++;
+      if (calls === 2) { secondStarted = Date.now(); return new Response("{}"); }
+      return new Response(new ReadableStream({ start(controller) {
+        setTimeout(() => { controller.enqueue(new TextEncoder().encode("{}")); firstEnded = Date.now(); controller.close(); }, 1200);
+      } }));
+    };
+    await Promise.all([pool.withOpenAIKey(call, Date.now() + 8000), pool.withOpenAIKey(call, Date.now() + 8000)]);
+    assert.equal(calls, 2); assert.ok(secondStarted - firstEnded >= 950);
   });
   await test("A short 429 retries the same key after pacing and then succeeds", async () => {
     const keys = []; const times = [];
-    const result = await pool.withGeminiKey(async key => {
+    const result = await pool.withOpenAIKey(async key => {
       keys.push(key); times.push(Date.now()); return new Response("{}", { status: keys.length === 1 ? 429 : 200 });
     }, Date.now() + 5000);
     assert.equal(result.status, 200); assert.deepEqual(keys, ["fixture-first", "fixture-first"]);
     assert.ok(times[1] - times[0] >= 950);
   });
   await test("Delayed workers cannot bunch up calls by consuming the reserved interval before sending", async () => {
-    const first = await gate.acquireGeminiSlot(Date.now() + 5000);
+    const first = await gate.acquireAiSlot(Date.now() + 5000);
     await new Promise(resolve => setTimeout(resolve, 300));
     const sentAt = Date.now();
-    await gate.releaseGeminiSlot(first, { success: true });
-    const next = await gate.acquireGeminiSlot(Date.now() + 5000);
+    await gate.releaseAiSlot(first, { success: true });
+    const next = await gate.acquireAiSlot(Date.now() + 5000);
     assert.ok(Date.now() - sentAt >= 950);
-    await gate.releaseGeminiSlot(next, { success: true });
+    await gate.releaseAiSlot(next, { success: true });
   });
   await test("A long 429 is shared across requests and keys instead of immediately key hopping", async () => {
     let calls = 0;
     const call = async () => { calls++; return new Response("{}", { status: 429, headers: { "Retry-After": "60" } }); };
-    await assert.rejects(() => pool.withGeminiKey(call, Date.now() + 5000), error => error.message === "gemini_quota" && error.retryAfterSeconds >= 60);
+    await assert.rejects(() => pool.withOpenAIKey(call, Date.now() + 5000), error => error.message === "ai_quota" && error.retryAfterSeconds >= 60);
     assert.equal(calls, 1);
-    process.env.GEMINI_API_KEYS = "another-key-from-the-same-project";
-    await assert.rejects(() => pool.withGeminiKey(call, Date.now() + 5000), /gemini_quota/);
+    process.env.OPENAI_API_KEYS = "another-key-from-the-same-project";
+    await assert.rejects(() => pool.withOpenAIKey(call, Date.now() + 5000), /ai_quota/);
     assert.equal(calls, 1);
   });
-  await test("Daily quota failures are not automatically retried", async () => {
+  await test("Exhausted credit and spending quota failures are not automatically retried", async () => {
     let calls = 0;
-    const body = { error: { details: [{ "@type": "type.googleapis.com/google.rpc.QuotaFailure", violations: [{ quotaId: "GenerateRequestsPerDayPerProjectPerModel-FreeTier" }] }] } };
-    await assert.rejects(() => pool.withGeminiKey(async () => {
+    const body = { error: { code: "insufficient_quota" } };
+    await assert.rejects(() => pool.withOpenAIKey(async () => {
       calls++; return new Response(JSON.stringify(body), { status: 429 });
     }, Date.now() + 5000), error => error.reason === "quota" && error.retryAfterSeconds >= 3600);
     assert.equal(calls, 1);
   });
   await test("Repeated short 429 responses stop after the configured maximum attempts", async () => {
     let calls = 0;
-    await assert.rejects(() => pool.withGeminiKey(async () => {
+    await assert.rejects(() => pool.withOpenAIKey(async () => {
       calls++; return new Response("{}", { status: 429 });
-    }, Date.now() + 6000), /gemini_quota/);
+    }, Date.now() + 6000), /ai_quota/);
     assert.equal(calls, 3);
   });
   await test("Invalid credentials fail over with pacing and their cooldown is stored in the database", async () => {
     const keys = [];
-    await pool.withGeminiKey(async key => {
+    await pool.withOpenAIKey(async key => {
       keys.push(key); return new Response("{}", { status: key === "fixture-first" ? 403 : 200 });
     }, Date.now() + 5000);
     assert.deepEqual(keys, ["fixture-first", "fixture-second"]);
@@ -107,26 +123,26 @@ try {
     assert.equal(rows.length, 1); assert.match(rows[0].key_hash, /^[a-f0-9]{64}$/);
   });
   await test("An expired lease recovers, and a stale worker cannot release the new lease", async () => {
-    const first = await gate.acquireGeminiSlot(Date.now() + 5000);
-    process.env.GEMINI_MAX_QUEUE_WAIT_MS = "0";
-    await assert.rejects(() => gate.acquireGeminiSlot(Date.now() + 5000), /gemini_quota/);
+    const first = await gate.acquireAiSlot(Date.now() + 5000);
+    process.env.OPENAI_MAX_QUEUE_WAIT_MS = "0";
+    await assert.rejects(() => gate.acquireAiSlot(Date.now() + 5000), /ai_quota/);
     await sql`update fact_ai_throttle set lease_until = now() - interval '1 second', next_request_at = now() - interval '1 second'`;
-    const next = await gate.acquireGeminiSlot(Date.now() + 5000);
-    await gate.releaseGeminiSlot(first, { success: true });
+    const next = await gate.acquireAiSlot(Date.now() + 5000);
+    await gate.releaseAiSlot(first, { success: true });
     const [state] = await sql`select lease_id from fact_ai_throttle`;
-    assert.equal(state.lease_id, next.id); await gate.releaseGeminiSlot(next, { success: true });
+    assert.equal(state.lease_id, next.id); await gate.releaseAiSlot(next, { success: true });
   });
   await test("Generic 400 responses do not trigger duplicate search fallback requests", async () => {
     let calls = 0;
     globalThis.fetch = async () => { calls++; return new Response(JSON.stringify({ error: { message: "Malformed request." } }), { status: 400 }); };
-    await assert.rejects(() => gemini.askGemini("Synthetic fixture"), /gemini_failed/);
+    await assert.rejects(() => openai.askOpenAI("Synthetic fixture"), /openai_off/);
     assert.equal(calls, 1);
   });
   await test("A video transcription 429 stops further media attempts and the fact-check request", async () => {
     const { transcribeLink } = await server.ssrLoadModule("/src/realorna/backend/transcript.ts");
     let models = 0; let downloads = 0;
     globalThis.fetch = async url => {
-      if (String(url).startsWith("https://generativelanguage.googleapis.com/")) {
+      if (String(url).startsWith("https://api.openai.com/")) {
         models++; return new Response("{}", { status: 429, headers: { "Retry-After": "60" } });
       }
       if (String(url).startsWith("https://example.com/")) {
@@ -135,7 +151,7 @@ try {
       return originalFetch(url);
     };
     await assert.rejects(() => transcribeLink({ url: "https://www.instagram.com/reel/fixture/", host: "instagram.com",
-      html: '<meta property="og:video" content="https://example.com/one.mp4"><meta property="og:video" content="https://example.com/two.mp4">' }), /gemini_quota/);
+      html: '<meta property="og:video" content="https://example.com/one.mp4"><meta property="og:video" content="https://example.com/two.mp4">' }), /ai_quota/);
     assert.equal(models, 1); assert.equal(downloads, 1);
   });
   console.log(JSON.stringify({ ok: true, rate_limit_checks: checks.length, live_provider_called: false }));

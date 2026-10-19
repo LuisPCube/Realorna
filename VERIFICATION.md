@@ -1,5 +1,28 @@
 # Verification record
 
+## 19 October 2026 — OpenAI and Real / Nah
+
+| Check | Result |
+| --- | --- |
+| `npm run typecheck` | Passed. |
+| `npm run build` | Passed; Nitro/Vercel output generated with `maxDuration: 180`. No live database was configured. |
+| `npm test` | Passed: 197 script unit tests and 59 TypeScript unit tests. |
+| `npm run test:factcheck` | Passed: 19 targeted scenarios using synthetic search/model evidence and an isolated PGlite database. |
+| `npm run test:ai-rate-limit` | Passed: 13 scenarios, including slow response bodies retaining their lease. |
+| `npm run test:payments` | Passed: 13 account/payment/order scenarios with simulated OpenAI responses. |
+| Report rendering | React server rendering passed for Indonesian and English Real, Nah and correction examples; evidence links, date context, strike-through, correction markers and removal of numeric scores were asserted. The standalone HTML uses the same Report component. |
+| Brand assets / whitespace | Brand check passed against this project's actual root with no warnings; `git diff --check` passed. |
+| Browser interaction, screenshots and responsive visual QA | **Not run for this update.** The current managed environment has no supported control-browser capability; its Sites workflow forbids an improvised preview/browser path. Earlier dated browser checks below apply only to earlier code. |
+| Live OpenAI key, real news/video, Vercel deployment | **Not tested.** No user OpenAI key, hosted database or deployment credentials were provided. |
+
+The fact-check scenarios cover: mixed true/false core claims, all-supported claims, minor corrections, material errors, unresolved causation, missing/fabricated evidence, publisher-only and homepage references, safe provenance URLs, incomplete input, separate link safety, structured article extraction, historical dates and metadata, forced web-search/strict-schema requests, truncated articles, incomplete/refused/malformed provider outputs, blocked articles and untranscribed video, multipart MP4 transcription, caption utilities, no legacy-provider fallback, and report/copy rendering. Related assertions are grouped in 19 scenarios.
+
+Rate-limit tests cover Retry-After seconds/dates, OpenAI request/token resets, exponential backoff and jitter, one in-flight call across shared database leases, slow-body and delayed-worker spacing, same-key 429 recovery, cross-key shared cooldown, exhausted credit/spend quota, bounded attempts, invalid-key cooldown, stale-lease recovery, no search-free 400 fallback, and stopping on a transcription 429.
+
+These are deterministic integration and rendering checks, not a measurement of real-world fact-check accuracy. A source URL appearing in OpenAI's retrieved evidence establishes provenance, not proof that the source entails every assertion. Source relevance, event dates, numerical interpretation, and causation still depend on the model's evidence analysis. Hosted Postgres contention, Vercel scheduling, actual model/tool access, social-platform media accessibility, browser hydration, touch layouts, and real provider latency remain unverified in this update.
+
+The standalone preview contains only explicitly labeled simulated IHSG cases; it has no live link checker and no API credentials. No real bank transfer or external message was sent. No screenshots are included in the artifacts.
+
 ## 18 October 2026 — rate-limit update
 
 | Check | Result |

@@ -8,7 +8,7 @@ export type Verdict =
   | "SEBAGIAN_BENAR"
   | "BELUM_TERVERIFIKASI";
 
-export type ClaimStatus = "benar" | "salah" | "belum_jelas";
+export type ClaimStatus = "benar" | "salah" | "keliru" | "belum_jelas";
 export type SafetyStatus = "ok" | "warn" | "bad" | "info";
 
 export type SafetyCode =
@@ -36,12 +36,16 @@ export type Claim = {
   text: string;
   status: ClaimStatus;
   explanation: string;
+  correction?: string;
+  importance?: "utama" | "detail";
+  source_urls?: string[];
 };
 
 export type Source = {
   title: string;
   url: string;
   publisher: string;
+  published_at?: string;
 };
 
 export type ContentMeta = {
@@ -59,13 +63,14 @@ export type FactContract = {
   red_flags: string[];
   sources: Source[];
   meta: ContentMeta;
+  checked_at?: string;
+  reference_date?: string;
 };
 
 export type FactOk = {
   ok: true;
   verdict: Verdict;
   confidence: number;
-  score: number;
   summary: string;
   summaryKey?: "sum_bad" | "sum_short" | "sum_http";
   claims: Claim[];
@@ -80,7 +85,10 @@ export type FactOk = {
   url: string;
   plan: Plan;
   mode: "structure" | "ai";
-  engine?: "gemini" | "grok";
+  engine?: "openai" | "gemini" | "grok";
+  checked_at?: string;
+  reference_date?: string;
+  demo?: boolean;
 };
 
 export type FactErrCode =

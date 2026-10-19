@@ -1,10 +1,11 @@
 import { isPublicHost } from "../engine.server";
-import { transcribeWithGemini } from "./gemini";
-import { GeminiRateLimitError } from "./key-pool";
+import { transcribeWithOpenAI } from "./openai";
+import { AiRateLimitError } from "./key-pool";
 
 export type Transcript = {
   text: string;
-  source: "youtube_captions" | "gemini_media";
+  source: "youtube_captions" | "openai_audio";
+  truncated?: boolean;
 };
 
 const UA =
@@ -99,10 +100,10 @@ function unescapeUrl(raw: string) {
     .replace(/\\u003D/gi, "=")
     .replace(/\\u003F/gi, "?")
     .replace(/\\\//g, "/")
-    .replace(/&/g, "&");
+    .replace(/&amp;/g, "&");
 }
 
-async function youtubeCaptions(videoId: string) {
+async function youtubeCaptions(videoId: string, deadline: number) {
   const res = await fetch("https://www.youtube.com/youtubei/v1/player?prettyPrint=false", {
     method: "POST",
     headers: {
@@ -121,7 +122,7 @@ async function youtubeCaptions(videoId: string) {
       },
       videoId,
     }),
-    signal: AbortSignal.timeout(8000),
+    signal: AbortSignal.timeout(Math.max(1, Math.min(8000, deadline - Date.now()))),
   });
   if (!res.ok) return "";
   const data = (await res.json()) as {
@@ -146,10 +147,10 @@ async function youtubeCaptions(videoId: string) {
   captionUrl.searchParams.set("fmt", "json3");
   const body = await fetch(captionUrl, {
     headers: { "User-Agent": UA, "Accept-Language": "id,en;q=0.8" },
-    signal: AbortSignal.timeout(8000),
+    signal: AbortSignal.timeout(Math.max(1, Math.min(8000, deadline - Date.now()))),
   });
   if (!body.ok) return "";
-  return parseCaptionPayload(await body.text()).slice(0, 12000);
+  return parseCaptionPayload(await body.text());
 }
 
 function mediaUrls(html: string) {
@@ -173,9 +174,10 @@ function mediaUrls(html: string) {
   return found;
 }
 
-async function downloadMedia(start: string) {
+async function downloadMedia(start: string, deadline: number) {
   let current = start;
   for (let hop = 0; hop < 3; hop++) {
+    if (deadline - Date.now() < 500) return null;
     let u: URL;
     try {
       u = new URL(current);
@@ -186,7 +188,7 @@ async function downloadMedia(start: string) {
     const res = await fetch(current, {
       redirect: "manual",
       headers: { "User-Agent": UA, Accept: "video/*,audio/*,*/*" },
-      signal: AbortSignal.timeout(12_000),
+      signal: AbortSignal.timeout(Math.max(1, Math.min(12_000, deadline - Date.now()))),
     });
     if (res.status >= 300 && res.status < 400) {
       const loc = res.headers.get("location");
@@ -225,55 +227,44 @@ async function downloadMedia(start: string) {
   return null;
 }
 
-function bytesToBase64(bytes: Uint8Array) {
-  return Buffer.from(bytes).toString("base64");
-}
-
-async function fromMediaPage(html: string | null) {
+async function fromMediaPage(html: string | null, deadline: number) {
   if (!html) return null;
   for (const url of mediaUrls(html)) {
+    if (deadline - Date.now() < 3000) return null;
     try {
-      const file = await downloadMedia(url);
+      const file = await downloadMedia(url, deadline);
       if (!file) continue;
-      const text = await transcribeWithGemini({
-        inlineData: { mimeType: file.mime, data: bytesToBase64(file.bytes) },
-      });
-      if (text && text.length >= 20) return { text: text.slice(0, 12000), source: "gemini_media" as const };
+      const text = await transcribeWithOpenAI(file, Math.min(deadline, Date.now() + 50_000));
+      if (text && text.length >= 20) return { text: text.slice(0, 12000), source: "openai_audio" as const, truncated: text.length > 12000 };
     } catch (err) {
-      if (err instanceof GeminiRateLimitError) throw err;
+      if (err instanceof AiRateLimitError) throw err;
       console.error("realorna media", err instanceof Error ? err.message : err);
     }
   }
   return null;
 }
 
-export async function transcribeLink(input: { url: string; host: string; html: string | null }): Promise<Transcript | null> {
+export async function transcribeLink(input: { url: string; host: string; html: string | null; deadline?: number }): Promise<Transcript | null> {
+  const deadline = input.deadline ?? Date.now() + 60_000;
   const host = input.host.toLowerCase();
   const youtube = host === "youtu.be" || host === "youtube.com" || host.endsWith(".youtube.com");
   if (youtube) {
     const id = youtubeId(input.url);
     if (!id) return null;
     try {
-      const captions = await youtubeCaptions(id);
-      if (captions.length >= 40) return { text: captions, source: "youtube_captions" };
+      const captions = await youtubeCaptions(id, deadline);
+      if (captions.length >= 40) return { text: captions.slice(0, 12000), source: "youtube_captions", truncated: captions.length > 12000 };
     } catch (err) {
       console.error("realorna captions", err instanceof Error ? err.message : err);
     }
-    try {
-      const spoken = await transcribeWithGemini({
-        fileData: { fileUri: `https://www.youtube.com/watch?v=${id}`, mimeType: "video/mp4" },
-      });
-      if (spoken && spoken.length >= 20) return { text: spoken.slice(0, 12000), source: "gemini_media" };
-    } catch (err) {
-      if (err instanceof GeminiRateLimitError) throw err;
-      console.error("realorna yt-audio", err instanceof Error ? err.message : err);
-    }
-    return null;
+    // The transcription API accepts media bytes, not a YouTube page URL.
+    // Without public captions or a downloadable media file, report unreadable.
+    return await fromMediaPage(input.html, deadline);
   }
   try {
-    return await fromMediaPage(input.html);
+    return await fromMediaPage(input.html, deadline);
   } catch (err) {
-    if (err instanceof GeminiRateLimitError) throw err;
+    if (err instanceof AiRateLimitError) throw err;
     console.error("realorna transcript", err instanceof Error ? err.message : err);
     return null;
   }

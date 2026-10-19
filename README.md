@@ -1,9 +1,7 @@
 # Realorna
 
-Fact and link checking with Regular / Advance plans, username/password accounts, manual bank transfers, and admin-granted check attempts.
+A claim-level news and spoken-video fact checker with **Real / Nah**, corrections, and clickable comparison evidence. The active provider is OpenAI, with mandatory web search and shared request pacing.
 
-Start with **[SETUP.md](SETUP.md)** for Vercel Postgres, your generated admin credentials, bank details, and Gemini API keys.
+Start with **[OPENAI-REAL-NAH.md](OPENAI-REAL-NAH.md)** for this update and Vercel configuration. **[SETUP.md](SETUP.md)** covers accounts, the existing admin, Postgres, transfer verification, API settings, and limits. **[VERIFICATION.md](VERIFICATION.md)** records tests and unverified live behavior.
 
-Private admin credentials are supplied separately and are not part of this repository. No live database credentials or API keys are embedded in the app.
-
-The 18 October rate-limit update is explained in **[RATE-LIMIT-FIX.md](RATE-LIMIT-FIX.md)**. Gemini calls now use shared database pacing, bounded backoff, and a persistent retry countdown.
+The free homepage examples and standalone `realorna-real-nah.html` preview use explicitly simulated IHSG values. They do not call an API or claim current market prices. Real link verification requires the full server application and your configured OpenAI API access.

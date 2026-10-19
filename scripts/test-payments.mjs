@@ -11,10 +11,10 @@ process.env.BETTER_AUTH_URL = "http://localhost:8090";
 process.env.TRANSFER_BANK_NAME = "Test bank";
 process.env.TRANSFER_ACCOUNT_NUMBER = "0000000000";
 process.env.TRANSFER_ACCOUNT_HOLDER = "TEST ONLY";
-process.env.GEMINI_MIN_INTERVAL_MS = "1000";
-process.env.GEMINI_RETRY_BASE_MS = "250";
-process.env.GEMINI_MAX_QUEUE_WAIT_MS = "2000";
-delete process.env.GEMINI_API_KEYS; delete process.env.GEMINI_API_KEY; delete process.env.XAI_API_KEY;
+process.env.OPENAI_MIN_INTERVAL_MS = "1000";
+process.env.OPENAI_RETRY_BASE_MS = "250";
+process.env.OPENAI_MAX_QUEUE_WAIT_MS = "2000";
+delete process.env.OPENAI_API_KEYS; delete process.env.OPENAI_API_KEY; delete process.env.XAI_API_KEY;
 const { createServer } = await import("vite");
 const server = await createServer({ server: { host: "127.0.0.1", port: 8090, strictPort: true }, logLevel: "error" });
 await server.listen();
@@ -124,25 +124,25 @@ try {
   await test("API-key failover handles invalid keys while a 429 cools down the shared pool",async()=>{
     const pool=await server.ssrLoadModule("/src/realorna/backend/key-pool.ts");
     await sql`delete from fact_ai_throttle`; await sql`delete from fact_ai_key_cooldowns`;
-    process.env.GEMINI_API_KEYS="test-exhausted,test-working,test-working"; assert.equal(pool.geminiKeys().length,2);
+    process.env.OPENAI_API_KEYS="test-exhausted,test-working,test-working"; assert.equal(pool.openaiKeys().length,2);
     const tried=[]; const call=async key=>{tried.push(key);return new Response("{}",{status:key==="test-exhausted"?429:200,headers:{"retry-after":"60"}});};
-    await assert.rejects(()=>pool.withGeminiKey(call,Date.now()+5000),/gemini_quota/); assert.deepEqual(tried,["test-exhausted"]);
-    tried.length=0;await assert.rejects(()=>pool.withGeminiKey(call,Date.now()+5000),/gemini_quota/);assert.deepEqual(tried,[]);
+    await assert.rejects(()=>pool.withOpenAIKey(call,Date.now()+5000),/ai_quota/); assert.deepEqual(tried,["test-exhausted"]);
+    tried.length=0;await assert.rejects(()=>pool.withOpenAIKey(call,Date.now()+5000),/ai_quota/);assert.deepEqual(tried,[]);
     await sql`delete from fact_ai_throttle`;
-    process.env.GEMINI_API_KEYS='["test-denied","test-healthy"]';const authTried=[];
-    await pool.withGeminiKey(async key=>{authTried.push(key);return new Response("{}",{status:key==="test-denied"?403:200});},Date.now()+5000);assert.deepEqual(authTried,["test-denied","test-healthy"]);
+    process.env.OPENAI_API_KEYS='["test-denied","test-healthy"]';const authTried=[];
+    await pool.withOpenAIKey(async key=>{authTried.push(key);return new Response("{}",{status:key==="test-denied"?403:200});},Date.now()+5000);assert.deepEqual(authTried,["test-denied","test-healthy"]);
     await sql`delete from fact_ai_throttle`;
-    process.env.GEMINI_API_KEYS="all-invalid-a,all-invalid-b";
-    await assert.rejects(()=>pool.withGeminiKey(async()=>new Response("{}",{status:403}),Date.now()+5000),/gemini_off/);
-    await assert.rejects(()=>pool.withGeminiKey(async()=>{throw new Error("A cooled-down invalid key must not be retried.");},Date.now()+1000),/gemini_off/);
+    process.env.OPENAI_API_KEYS="all-invalid-a,all-invalid-b";
+    await assert.rejects(()=>pool.withOpenAIKey(async()=>new Response("{}",{status:403}),Date.now()+5000),/openai_off/);
+    await assert.rejects(()=>pool.withOpenAIKey(async()=>{throw new Error("A cooled-down invalid key must not be retried.");},Date.now()+1000),/openai_off/);
   });
   await test("An AI check retries with its original attempt and stores a report (mock provider)",async()=>{
     await sql`delete from fact_ai_throttle`;
-    process.env.GEMINI_API_KEYS="fixture-key-1,fixture-key-2";process.env.GEMINI_MODEL="fixture-model";
+    process.env.OPENAI_API_KEYS="fixture-key-1,fixture-key-2";process.env.OPENAI_MODEL="fixture-model";
     let modelCalls=0;
-    const fixture={verdict:"BELUM_TERVERIFIKASI",confidence:35,summary:"Integration test fixture only.",claims:[],red_flags:[],sources:[],meta:{title:"Test fixture",platform:"web",author:"",published_at:""}};
+    const fixture={verdict:"BELUM_TERVERIFIKASI",summary:"Integration test fixture only.",claims:[],red_flags:[],sources:[],reference_date:"",meta:{title:"Test fixture",platform:"web",author:"",published_at:""}};
     globalThis.fetch=async(url,options)=>{
-      if(String(url).startsWith("https://generativelanguage.googleapis.com/")) {modelCalls++;assert.equal(options.headers["x-goog-api-key"],"fixture-key-1");return new Response(JSON.stringify(modelCalls===1?{}:{candidates:[{content:{parts:[{text:JSON.stringify(fixture)}]}}]}),{status:modelCalls===1?429:200});}
+      if(String(url).startsWith("https://api.openai.com/")) {modelCalls++;assert.equal(options.headers.Authorization,"Bearer fixture-key-1");return new Response(JSON.stringify(modelCalls===1?{}:{status:"completed",output:[{type:"web_search_call",status:"completed",action:{type:"search",sources:[]}},{type:"message",content:[{type:"output_text",text:JSON.stringify(fixture)}]}]}),{status:modelCalls===1?429:200});}
       if(String(url).startsWith("https://example.com"))return new Response(`<html><head><title>Test fixture</title></head><body><article>${"This is synthetic text for an integration test. ".repeat(40)}</article></body></html>`,{headers:{"content-type":"text/html"}});
       return originalFetch(url,options);
     };
@@ -154,7 +154,7 @@ try {
     await sql`delete from fact_ai_throttle`;
     let modelCalls=0;
     globalThis.fetch=async(url,options)=>{
-      if(String(url).startsWith("https://generativelanguage.googleapis.com/")){modelCalls++;return new Response("{}",{status:429,headers:{"Retry-After":"60"}});}
+      if(String(url).startsWith("https://api.openai.com/")){modelCalls++;return new Response("{}",{status:429,headers:{"Retry-After":"60"}});}
       if(String(url).startsWith("https://example.com"))return new Response(`<article>${"Synthetic test article. ".repeat(80)}</article>`,{headers:{"content-type":"text/html"}});
       return originalFetch(url,options);
     };
@@ -165,5 +165,5 @@ try {
     const state=await request("/api/account",undefined,alex);assert.equal(state.data.attempts.length,0);
     assert.ok(state.data.orders.find(o=>o.order_id===created.data.order_id).retry_after_at);
   });
-  console.log(JSON.stringify({ok:true,integration_checks:checks.length,live_bank_tested:false,live_gemini_tested:false}));
+  console.log(JSON.stringify({ok:true,integration_checks:checks.length,live_bank_tested:false,live_openai_tested:false}));
 } finally { globalThis.fetch=originalFetch; await server.close(); }

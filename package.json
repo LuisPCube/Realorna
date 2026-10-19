@@ -21,7 +21,8 @@
     "format": "prettier --write .",
     "admin:seed": "node --env-file-if-exists=.env.local scripts/seed-admin.mjs",
     "test:payments": "node scripts/test-payments.mjs",
-    "test:ai-rate-limit": "node scripts/test-ai-rate-limit.mjs"
+    "test:ai-rate-limit": "node scripts/test-ai-rate-limit.mjs",
+    "test:factcheck": "node scripts/test-factcheck.mjs"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.4",

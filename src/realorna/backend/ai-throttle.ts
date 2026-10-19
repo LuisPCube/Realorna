@@ -1,23 +1,23 @@
 import { randomUUID, createHash } from "node:crypto";
 import { getSql } from "@/lib/db";
-import { GeminiRateLimitError, geminiRateSettings, type RateReason } from "./gemini-rate-policy";
+import { AiRateLimitError, aiRateSettings, type RateReason } from "./ai-rate-policy";
 
-const SCOPE = "gemini";
-const REQUEST_TIMEOUT_MS = 20_000;
+const SCOPE = "openai";
+const REQUEST_TIMEOUT_MS = 45_000;
 export { REQUEST_TIMEOUT_MS };
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
-export type GeminiLease = { id: string; failures: number };
+export type AiLease = { id: string; failures: number };
 
-export async function acquireGeminiSlot(deadline: number): Promise<GeminiLease> {
+export async function acquireAiSlot(deadline: number): Promise<AiLease> {
   const sql = await getSql();
-  const settings = geminiRateSettings();
+  const settings = aiRateSettings();
   const queueDeadline = Math.min(deadline - 500, Date.now() + settings.maxQueueMs);
   await sql`insert into fact_ai_throttle (scope) values (${SCOPE}) on conflict (scope) do nothing`;
   while (true) {
-    if (deadline - Date.now() < 500) throw new GeminiRateLimitError(1, "busy");
+    if (deadline - Date.now() < 500) throw new AiRateLimitError(1, "busy");
     const id = randomUUID();
     const rows = await sql.query<{ failure_count: number }>(`update fact_ai_throttle
-      set lease_id = $2, lease_until = clock_timestamp() + interval '60 seconds',
+      set lease_id = $2, lease_until = clock_timestamp() + interval '90 seconds',
           next_request_at = clock_timestamp() + ($3::int * interval '1 millisecond')
       where scope = $1 and next_request_at <= clock_timestamp() and blocked_until <= clock_timestamp()
         and (lease_until is null or lease_until <= clock_timestamp())
@@ -33,13 +33,13 @@ export async function acquireGeminiSlot(deadline: number): Promise<GeminiLease> 
     const reason = Number(state?.cooldown_ms ?? 0) > 0 ? state.block_reason : waitMs > 0 ? "rate" : "busy";
     const remaining = queueDeadline - Date.now();
     if (remaining <= 0 || waitMs > remaining) {
-      throw new GeminiRateLimitError(Math.max(waitMs, busyMs, 1000) / 1000, reason);
+      throw new AiRateLimitError(Math.max(waitMs, busyMs, 1000) / 1000, reason);
     }
     await sleep(Math.min(1000, remaining, Math.max(100, waitMs)));
   }
 }
 
-export async function releaseGeminiSlot(lease: GeminiLease, options: { success?: boolean; delayMs?: number; reason?: RateReason } = {}) {
+export async function releaseAiSlot(lease: AiLease, options: { success?: boolean; delayMs?: number; reason?: RateReason } = {}) {
   const sql = await getSql();
   // The lease token prevents a timed-out worker from releasing a newer worker.
   const [state] = await sql.query<{ wait_ms: string | number }>(`update fact_ai_throttle set lease_id = null, lease_until = null,
@@ -49,7 +49,7 @@ export async function releaseGeminiSlot(lease: GeminiLease, options: { success?:
     failure_count = case when $5 then 0 when $3 > 0 then least(failure_count + 1, 8) else failure_count end
     where scope = $1 and lease_id = $2 returning
       greatest(0, ceil(extract(epoch from (greatest(next_request_at, blocked_until) - clock_timestamp())) * 1000)) as wait_ms`,
-    [SCOPE, lease.id, Math.ceil(options.delayMs ?? 0), options.reason ?? "rate", Boolean(options.success), geminiRateSettings().intervalMs]);
+    [SCOPE, lease.id, Math.ceil(options.delayMs ?? 0), options.reason ?? "rate", Boolean(options.success), aiRateSettings().intervalMs]);
   return Number(state?.wait_ms ?? options.delayMs ?? 0);
 }
 

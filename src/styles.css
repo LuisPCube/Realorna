@@ -622,67 +622,6 @@ body {
   gap: 18px;
   align-items: center;
 }
-.seal {
-  flex: none;
-  width: 112px;
-  height: 112px;
-  animation: stamp 0.6s cubic-bezier(0.2, 0.9, 0.3, 1.15) both;
-}
-@media (min-width: 600px) {
-  .seal {
-    width: 132px;
-    height: 132px;
-  }
-}
-@keyframes stamp {
-  0% {
-    transform: scale(1.7) rotate(-16deg);
-    opacity: 0;
-  }
-  55% {
-    transform: scale(0.94) rotate(2deg);
-    opacity: 1;
-  }
-  100% {
-    transform: scale(1) rotate(0);
-  }
-}
-.seal-body {
-  fill: var(--v-soft);
-  stroke: var(--v);
-  stroke-width: 1.5;
-}
-.seal-track {
-  fill: none;
-  stroke: var(--line);
-  stroke-width: 6;
-}
-.seal-arc {
-  fill: none;
-  stroke: var(--v);
-  stroke-width: 6;
-  stroke-linecap: round;
-  stroke-dasharray: var(--c);
-  stroke-dashoffset: var(--to);
-  animation: arc 0.9s 0.3s cubic-bezier(0.3, 0.7, 0.2, 1) backwards;
-}
-@keyframes arc {
-  from {
-    stroke-dashoffset: var(--c);
-  }
-}
-.seal-num {
-  font-family: var(--font-display);
-  font-weight: 700;
-  font-size: 36px;
-  fill: var(--v);
-}
-.seal-lbl {
-  font-family: var(--font-body);
-  font-weight: 600;
-  font-size: 10px;
-  fill: var(--ink-2);
-}
 .rep-title {
   font-family: var(--font-display);
   font-weight: 700;
@@ -1378,3 +1317,29 @@ img.qr {
   .rn .credit-grid > div { padding:.75rem; }
 }
 @media print { .rn .account-card, .rn .auth-layout, .rn .transfer-dialog { display:none; } }
+
+/* Claim verification uses the existing Realorna palette and typography. */
+.rn .report-kicker { margin: 0 0 12px; color: var(--ink-2); font-size: .8125rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.rn .verdict-mark { display: grid; place-items: center; flex: none; width: 76px; height: 76px; border-radius: 22px; color: var(--v); background: var(--v-soft); font: 700 2.5rem var(--font-display); }
+.rn .rep-head > div { min-width: 0; }
+.rn .report .rep-title { font-size: clamp(2rem, 6vw, 3rem); }
+.rn .demo-notice { margin-bottom: 20px; padding: 14px 16px; border: 1px dashed var(--line-strong); border-radius: 12px; color: var(--ink); background: var(--surface-2); }
+.rn .demo-notice p { margin: 4px 0 0; color: var(--ink-2); font-size: .875rem; }
+.rn .example-note { margin: 2px 0 0; font-size: .8125rem; color: var(--ink-2); }
+.rn .examples .link-btn { min-height: 44px; }
+.rn .time-context { margin: 16px 0 4px; font-size: .9375rem; color: var(--ink-2); }
+.rn .claim-main { min-width: 0; flex: 1; }
+.rn .claim-heading { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; }
+.rn .claim-heading .pill { flex: none; margin: 0; }
+.rn .claim-symbol { font-size: 1rem; font-weight: 700; }
+.rn .claim-row .sig-d { margin: 4px 0 0; }
+.rn .claim-row s { text-decoration-thickness: 2px; text-decoration-color: var(--bad); }
+.rn .claim-correction { display: flex; gap: 6px; align-items: baseline; margin: 8px 0 0; color: var(--ok); font-size: .9375rem; }
+.rn .claim-correction svg { flex: none; align-self: flex-start; margin-top: 3px; }
+.rn .claim-evidence { display: flex; flex-wrap: wrap; gap: 0 12px; margin-top: 4px; font-size: .8125rem; }
+.rn .claim-evidence a { display: inline-flex; align-items: center; min-height: 40px; color: var(--accent-text); text-decoration: underline; text-underline-offset: 3px; overflow-wrap: anywhere; }
+.rn .safety-details { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--line); }
+.rn .safety-details > summary { cursor: pointer; min-height: 44px; font-weight: 600; color: var(--ink-2); }
+@media (max-width: 440px) { .rn .rep-head { align-items: flex-start; gap: 12px; } .rn .verdict-mark { width: 52px; height: 52px; border-radius: 16px; } .rn .verdict-mark svg { width: 28px; height: 28px; } }
+
+.rn .report-article-title { margin: 0 0 16px; font-weight: 600; color: var(--ink); font-size: 1.0625rem; overflow-wrap: anywhere; }
